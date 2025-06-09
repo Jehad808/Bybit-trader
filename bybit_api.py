@@ -41,6 +41,14 @@ class BybitTradingAPI:
             },
         })
         
+        # تحميل معلومات الأسواق
+        try:
+            self.exchange.load_markets()
+            logger.info("✅ تم تحميل معلومات أسواق Bybit.")
+        except Exception as e:
+            logger.error(f"❌ فشل في تحميل معلومات أسواق Bybit: {e}")
+            raise
+        
         # إعدادات التداول
         self.leverage = int(self.config.get("BYBIT", "LEVERAGE", fallback=100))
         self.capital_percentage = float(self.config.get("BYBIT", "CAPITAL_PERCENTAGE", fallback=2))
