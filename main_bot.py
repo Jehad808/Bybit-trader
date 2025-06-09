@@ -58,7 +58,7 @@ class TradingBot:
             string_session = self.config["TELEGRAM"]["STRING_SESSION"]
             
             self.telegram_client = TelegramClient(
-                string_session,
+                '/tmp/my_session.session',
                 api_id,
                 api_hash
             )
