@@ -56,13 +56,11 @@ class TradingBot:
             api_id = int(self.config["TELEGRAM"]["API_ID"])
             api_hash = self.config["TELEGRAM"]["API_HASH"]
             string_session = self.config["TELEGRAM"]["STRING_SESSION"]
-            
-            self.telegram_client = TelegramClient(
+                     self.telegram_client = TelegramClient(
                 string_session,
                 api_id,
                 api_hash
-            )
-            
+            )      
             logger.info("✅ تم تهيئة عميل Telegram")
             
         except Exception as e:
