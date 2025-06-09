@@ -58,9 +58,9 @@ class TradingBot:
             string_session = self.config["TELEGRAM"]["STRING_SESSION"]
             
             self.telegram_client = TelegramClient(
-                string_session=string_session,
-                api_id=api_id,
-                api_hash=api_hash
+                string_session,
+                api_id,
+                api_hash
             )
             
             logger.info("✅ تم تهيئة عميل Telegram")
