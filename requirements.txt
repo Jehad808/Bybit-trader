@@ -1,3 +1,4 @@
-telethon>=1.35
-ccxt>=4.2.86      # Bybit مدعومة بشكل كامل هنا
-python-dotenv>=1.0
+ccxt>=4.2.86
+telethon==1.36.0
+python-decouple==3.8
+requests>=2.31.0
