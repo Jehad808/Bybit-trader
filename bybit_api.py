@@ -57,15 +57,10 @@ class BybitTradingAPI:
 
     def _format_symbol(self, symbol: str) -> str:
         """تنسيق رمز العملة لـ Bybit"""
-        # إزالة .P إذا كان موجود
         symbol = symbol.replace('.P', '')
-        
-        # التأكد من وجود USDT
         if not symbol.endswith('USDT'):
             if 'USDT' not in symbol:
                 symbol = symbol + 'USDT'
-        
-        # إرجاع الرمز بدون تنسيق ccxt الإضافي
         return symbol
 
     def _round_quantity(self, symbol: str, quantity: float) -> float:
@@ -74,13 +69,8 @@ class BybitTradingAPI:
             market = self.exchange.market(symbol)
             min_amount = market["limits"]["amount"]["min"] or 0.001
             step = market["precision"]["amount"] or 0.001
-            
-            # تقريب للأسفل حسب الخطوة المسموحة
             rounded = math.floor(quantity / step) * step
-            
-            # التأكد من أن الكمية أكبر من الحد الأدنى
             return max(rounded, min_amount)
-            
         except Exception as e:
             logger.warning(f"⚠️ خطأ في تقريب الكمية: {e}")
             return round(quantity, 3)
@@ -90,9 +80,7 @@ class BybitTradingAPI:
         try:
             market = self.exchange.market(symbol)
             tick_size = market["precision"]["price"] or 0.01
-            
             return round(price / tick_size) * tick_size
-            
         except Exception as e:
             logger.warning(f"⚠️ خطأ في تقريب السعر: {e}")
             return round(price, 2)
@@ -101,10 +89,9 @@ class BybitTradingAPI:
         """الحصول على رصيد USDT من محفظة الفيوتشر"""
         try:
             balance = self.exchange.fetch_balance(params={'type': 'future'})
-            usdt_balance = balance['USDT']['free']  # الرصيد المتاح في USDT
+            usdt_balance = balance['USDT']['free']
             logger.info(f"💰 رصيد محفظة الفيوتشر USDT: {usdt_balance}")
             return usdt_balance
-            
         except Exception as e:
             logger.error(f"❌ خطأ في الحصول على رصيد المحفظة: {e}")
             return 0
@@ -115,22 +102,13 @@ class BybitTradingAPI:
             balance = self.get_balance()
             if balance <= 0:
                 raise ValueError("رصيد غير كافي")
-            
-            # حساب قيمة المركز (5% من رصيد المحفظة)
             position_value = balance * (self.capital_percentage / 100)
-            
-            # حساب الكمية
             quantity = position_value / entry_price
-            
-            # تقريب الكمية
             formatted_symbol = self._format_symbol(symbol)
             rounded_quantity = self._round_quantity(formatted_symbol, quantity)
-            
             logger.info(f"💰 قيمة المركز: {position_value} USDT")
             logger.info(f"📊 الكمية: {rounded_quantity}")
-            
             return rounded_quantity
-            
         except Exception as e:
             logger.error(f"❌ خطأ في حساب حجم المركز: {e}")
             raise
@@ -139,15 +117,10 @@ class BybitTradingAPI:
         """جلب أقصى رافعة مالية متاحة لرمز معين عبر API مباشر"""
         try:
             formatted_symbol = self._format_symbol(symbol)
-            # استدعاء API لجلب معلومات الأداة
             url = "https://api.bybit.com/v5/market/instruments-info"
-            params = {
-                "category": "linear",
-                "symbol": formatted_symbol
-            }
+            params = {"category": "linear", "symbol": formatted_symbol}
             response = requests.get(url, params=params)
             data = response.json()
-            
             if data['retCode'] == 0 and data['result']['list']:
                 max_leverage = float(data['result']['list'][0]['leverageFilter']['maxLeverage'])
                 logger.info(f"⚡ أقصى رافعة مالية لـ {formatted_symbol}: {max_leverage}x")
@@ -155,10 +128,8 @@ class BybitTradingAPI:
             else:
                 logger.error(f"❌ فشل في جلب معلومات الأداة: {data}")
                 raise Exception("فشل في جلب معلومات الأداة")
-                
         except Exception as e:
             logger.error(f"❌ خطأ في جلب أقصى رافعة مالية: {e}")
-            # محاولة رافعة أقل كبديل
             logger.warning("⚠️ استخدام رافعة افتراضية 20x")
             return 20.0
 
@@ -167,23 +138,18 @@ class BybitTradingAPI:
         try:
             formatted_symbol = self._format_symbol(symbol)
             leverage = self.get_max_leverage(formatted_symbol)
-            
             logger.info(f"⚡ تعيين الرافعة المالية {leverage}x للرمز {formatted_symbol}")
-            
-            # تعيين الرافعة المالية
             try:
                 result = self.exchange.set_leverage(leverage, formatted_symbol)
                 logger.info(f"✅ تم تعيين الرافعة المالية بنجاح: {result}")
                 return True
             except Exception as set_error:
                 logger.warning(f"⚠️ فشل تعيين الرافعة {leverage}x: {set_error}")
-                # محاولة رافعة أقل
                 fallback_leverage = 10.0
                 logger.info(f"⚡ محاولة تعيين رافعة أقل {fallback_leverage}x")
                 result = self.exchange.set_leverage(fallback_leverage, formatted_symbol)
                 logger.info(f"✅ تم تعيين الرافعة الاحتياطية بنجاح: {result}")
                 return True
-                
         except Exception as e:
             logger.error(f"❌ خطأ في تعيين الرافعة: {e}")
             return False
@@ -201,46 +167,61 @@ class BybitTradingAPI:
 
     def create_market_order(self, symbol: str, side: str, amount: float, 
                           stop_loss: float = None, take_profit: float = None) -> Dict[str, Any]:
-        """إنشاء أمر سوق مع وقف الخسارة والهدف"""
+        """إنشاء أمر سوق مع إضافة وقف الخسارة والهدف كأوامر منفصلة"""
         try:
-            # تنسيق الرمز
             formatted_symbol = self._format_symbol(symbol)
-            
-            # تقريب الكمية
             rounded_amount = self._round_quantity(formatted_symbol, amount)
-            
             logger.info(f"📝 إنشاء أمر {side} للرمز {formatted_symbol}")
             logger.info(f"📊 الكمية: {rounded_amount}")
             
-            # إعداد المعلمات الإضافية لجني الأرباح ووقف الخسارة
-            params = {
-                'reduceOnly': False
-            }
-            if stop_loss:
-                rounded_sl = self._round_price(formatted_symbol, stop_loss)
-                params['stop_loss'] = rounded_sl
-                params['sl_trigger_by'] = 'LastPrice'
-            if take_profit:
-                rounded_tp = self._round_price(formatted_symbol, take_profit)
-                params['take_profit'] = rounded_tp
-                params['tp_trigger_by'] = 'LastPrice'
-            
-            # إنشاء الأمر الأساسي
+            # إنشاء الأمر السوقي الأساسي بدون SL/TP
             order = self.exchange.create_market_order(
                 formatted_symbol, 
                 side, 
                 rounded_amount,
-                params=params
+                params={'reduceOnly': False}
             )
-            
             logger.info(f"✅ تم إنشاء الأمر: {order['id']}")
+            
+            # إضافة وقف الخسارة كأمر مشروط
             if stop_loss:
-                logger.info(f"✅ تم تعيين وقف الخسارة: {rounded_sl}")
+                rounded_sl = self._round_price(formatted_symbol, stop_loss)
+                sl_side = 'sell' if side == 'buy' else 'buy'
+                sl_params = {
+                    'stopPrice': rounded_sl,
+                    'triggerBy': 'LastPrice',
+                    'reduceOnly': True
+                }
+                sl_order = self.exchange.create_order(
+                    formatted_symbol,
+                    'stop',
+                    sl_side,
+                    rounded_amount,
+                    None,
+                    sl_params
+                )
+                logger.info(f"✅ تم تعيين وقف الخسارة: {rounded_sl} (Order ID: {sl_order['id']})")
+            
+            # إضافة جني الأرباح كأمر مشروط
             if take_profit:
-                logger.info(f"✅ تم تعيين الهدف: {rounded_tp}")
+                rounded_tp = self._round_price(formatted_symbol, take_profit)
+                tp_side = 'sell' if side == 'buy' else 'buy'
+                tp_params = {
+                    'stopPrice': rounded_tp,
+                    'triggerBy': 'LastPrice',
+                    'reduceOnly': True
+                }
+                tp_order = self.exchange.create_order(
+                    formatted_symbol,
+                    'takeProfit',
+                    tp_side,
+                    rounded_amount,
+                    None,
+                    tp_params
+                )
+                logger.info(f"✅ تم تعيين الهدف: {rounded_tp} (Order ID: {tp_order['id']})")
             
             return order
-            
         except Exception as e:
             logger.error(f"❌ خطأ في إنشاء الأمر: {e}")
             raise
@@ -250,22 +231,12 @@ class BybitTradingAPI:
         """فتح مركز جديد"""
         try:
             logger.info(f"🚀 فتح مركز {direction} للرمز {symbol}")
-            
-            # ضبط وضع الرافعة المالية إلى 'cross'
             if not self.set_margin_mode(symbol, "cross"):
                 raise Exception("فشل في ضبط وضع الرافعة المالية إلى 'cross'")
-            
-            # تعيين أقصى رافعة مالية
             if not self.set_leverage(symbol):
                 logger.warning("⚠️ فشل تعيين الرافعة المالية، متابعة باستخدام الرافعة الحالية")
-            
-            # حساب حجم المركز
             position_size = self.calculate_position_size(symbol, entry_price)
-            
-            # تحديد اتجاه الأمر
             side = 'buy' if direction.upper() == 'LONG' else 'sell'
-            
-            # إنشاء الأمر
             order = self.create_market_order(
                 symbol, 
                 side, 
@@ -273,9 +244,7 @@ class BybitTradingAPI:
                 stop_loss,
                 take_profit
             )
-            
             logger.info(f"✅ تم فتح المركز بنجاح")
-            
             return {
                 'status': 'success',
                 'order': order,
@@ -284,7 +253,6 @@ class BybitTradingAPI:
                 'size': position_size,
                 'entry_price': entry_price
             }
-            
         except Exception as e:
             logger.error(f"❌ خطأ في فتح المركز: {e}")
             return {
@@ -297,10 +265,8 @@ class BybitTradingAPI:
         try:
             positions = self.exchange.fetch_positions()
             open_positions = [pos for pos in positions if pos['contracts'] > 0]
-            
             logger.info(f"📊 المراكز المفتوحة: {len(open_positions)}")
             return open_positions
-            
         except Exception as e:
             logger.error(f"❌ خطأ في جلب المراكز: {e}")
             return []
@@ -309,19 +275,12 @@ class BybitTradingAPI:
         """إغلاق مركز"""
         try:
             formatted_symbol = self._format_symbol(symbol)
-            
-            # الحصول على المركز الحالي
             positions = self.exchange.fetch_positions([formatted_symbol])
             position = next((pos for pos in positions if pos['contracts'] > 0), None)
-            
             if not position:
                 return {'status': 'error', 'message': 'لا يوجد مركز مفتوح'}
-            
-            # تحديد اتجاه الإغلاق
             side = 'sell' if position['side'] == 'long' else 'buy'
             amount = abs(position['contracts'])
-            
-            # إنشاء أمر إغلاق
             order = self.exchange.create_market_order(
                 formatted_symbol,
                 side,
@@ -329,14 +288,11 @@ class BybitTradingAPI:
                 None,
                 {'reduceOnly': True}
             )
-            
             logger.info(f"✅ تم إغلاق المركز: {symbol}")
-            
             return {
                 'status': 'success',
                 'order': order
             }
-            
         except Exception as e:
             logger.error(f"❌ خطأ في إغلاق المركز: {e}")
             return {
