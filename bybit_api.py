@@ -55,7 +55,7 @@ class BybitTradingAPI:
         logger.info(f"✅ تم تهيئة Bybit API - نسبة رأس المال: {self.capital_percentage}%")
 
     def _format_symbol(self, symbol: str) -> str:
-        """تنسيق رمز العملة لـ Bybit - الإصلاح الجديد"""
+        """تنسيق رمز العملة لـ Bybit"""
         # إزالة .P إذا كان موجود
         symbol = symbol.replace('.P', '')
         
@@ -138,13 +138,15 @@ class BybitTradingAPI:
         """جلب أقصى رافعة مالية متاحة لرمز معين"""
         try:
             formatted_symbol = self._format_symbol(symbol)
-            market = self.exchange.fetch_market(formatted_symbol)
+            market = self.exchange.market(formatted_symbol)
             max_leverage = float(market['info']['leverage_filter']['max_leverage'])
             logger.info(f"⚡ أقصى رافعة مالية لـ {formatted_symbol}: {max_leverage}x")
             return max_leverage
         except Exception as e:
             logger.error(f"❌ خطأ في جلب أقصى رافعة مالية: {e}")
-            raise
+            # رافعة افتراضية إذا فشل الجلب
+            logger.warning("⚠️ استخدام رافعة افتراضية 50x")
+            return 50.0
 
     def set_leverage(self, symbol: str) -> bool:
         """تعيين أقصى رافعة مالية متاحة للرمز"""
