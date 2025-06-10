@@ -122,15 +122,15 @@ class TradingSignalParser:
             direction = self.normalize_direction(direction)
             
             # التحقق من البيانات الأساسية
-            if not all([symbol, direction, entry_price]):
+            if not all([symbol, direction, entry_price, take_profit_1, stop_loss]):
                 logger.warning("❌ بيانات الإشارة غير مكتملة")
                 return None
             
             try:
                 entry_price = float(entry_price)
-                take_profit_1 = float(take_profit_1) if take_profit_1 else None
+                take_profit_1 = float(take_profit_1)
                 take_profit_2 = float(take_profit_2) if take_profit_2 else None
-                stop_loss = float(stop_loss) if stop_loss else None
+                stop_loss = float(stop_loss)
             except ValueError:
                 logger.error("❌ خطأ في تحويل الأسعار إلى أرقام")
                 return None
@@ -157,7 +157,7 @@ class TradingSignalParser:
         """التحقق من صحة الإشارة"""
         try:
             # التحقق من البيانات الأساسية
-            required_fields = ['symbol', 'direction', 'entry_price']
+            required_fields = ['symbol', 'direction', 'entry_price', 'take_profit_1', 'stop_loss']
             for field in required_fields:
                 if not signal.get(field):
                     logger.error(f"❌ حقل مطلوب مفقود: {field}")
@@ -171,6 +171,12 @@ class TradingSignalParser:
             # التحقق من صحة الأسعار
             if signal['entry_price'] <= 0:
                 logger.error("❌ سعر الدخول يجب أن يكون أكبر من صفر")
+                return False
+            if signal['take_profit_1'] <= 0:
+                logger.error("❌ الهدف الأول يجب أن يكون أكبر من صفر")
+                return False
+            if signal['stop_loss'] <= 0:
+                logger.error("❌ وقف الخسارة يجب أن يكون أكبر من صفر")
                 return False
             
             # التحقق من منطقية الأسعار
@@ -195,4 +201,3 @@ class TradingSignalParser:
         except Exception as e:
             logger.error(f"❌ خطأ في التحقق من الإشارة: {e}")
             return False
-
