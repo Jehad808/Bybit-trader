@@ -157,7 +157,7 @@ class TradingBot:
             logger.info("🚀 بدء تنفيذ الصفقة...")
             
             # تنفيذ الصفقة
-            order_id = self.trading_api.open_position(
+            result = self.trading_api.open_position(
                 symbol=signal_data['symbol'],
                 direction=signal_data['direction'],
                 entry_price=signal_data['entry_price'],
@@ -165,13 +165,13 @@ class TradingBot:
                 stop_loss=signal_data['stop_loss']
             )
             
-            if order_id:
+            if result['status'] == 'success':
                 self.stats['trades_executed'] += 1
-                logger.info(f"✅ تم تنفيذ الصفقة بنجاح - Order ID: {order_id}")
+                logger.info(f"✅ تم تنفيذ الصفقة بنجاح - Order ID: {result['order']['id']}")
                 logger.info(f"📈 إجمالي الصفقات المنفذة: {self.stats['trades_executed']}")
             else:
                 self.stats['trades_failed'] += 1
-                logger.error("❌ فشل في تنفيذ الصفقة")
+                logger.error(f"❌ فشل في تنفيذ الصفقة: {result['message']}")
                 
         except Exception as e:
             self.stats['trades_failed'] += 1
@@ -196,8 +196,6 @@ class TradingBot:
         """بدء تشغيل البوت"""
         try:
             logger.info("🚀 بدء تشغيل بوت التداول...")
-            logger.info(f"⚙️ الرافعة المالية: {self.trading_api.leverage}x")
-            logger.info(f"💰 نسبة رأس المال: {self.trading_api.capital_percentage}%")
             logger.info("📡 البوت يستقبل الرسائل من جميع المحادثات...")
             
             # تسجيل معالج الرسائل
@@ -252,5 +250,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
