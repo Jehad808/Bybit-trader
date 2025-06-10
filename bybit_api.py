@@ -88,7 +88,7 @@ class BybitTradingAPI:
     def get_balance(self) -> float:
         """الحصول على رصيد USDT من محفظة الفيوتشر"""
         try:
-            balance = self.exchange.fetch_balance(params={'type': 'future'})
+            balance = self.exchange.fetch_balance(params={'type': 'future', 'category': 'linear'})
             usdt_balance = balance['USDT']['free']
             logger.info(f"💰 رصيد محفظة الفيوتشر USDT: {usdt_balance}")
             return usdt_balance
@@ -101,14 +101,14 @@ class BybitTradingAPI:
         try:
             balance = self.get_balance()
             if balance <= 0:
-                raise ValueError("رصيد غير كافي")
+                raise RuntimeError("رصيد غير كافي")
             position_value = balance * (self.capital_percentage / 100)
             quantity = position_value / entry_price
             formatted_symbol = self._format_symbol(symbol)
-            rounded_quantity = self._round_quantity(formatted_symbol, quantity)
+            rounded_qty = self._round_quantity(formatted_symbol, quantity)
             logger.info(f"💰 قيمة المركز: {position_value} USDT")
-            logger.info(f"📊 الكمية: {rounded_quantity}")
-            return rounded_quantity
+            logger.info(f"📊 الكمية: {rounded_qty}")
+            return rounded_qty
         except Exception as e:
             logger.error(f"❌ خطأ في حساب حجم المركز: {e}")
             raise
@@ -139,22 +139,16 @@ class BybitTradingAPI:
             formatted_symbol = self._format_symbol(symbol)
             leverage = self.get_max_leverage(formatted_symbol)
             logger.info(f"⚡ تعيين الرافعة المالية {leverage}x للرمز {formatted_symbol}")
-            params = {'category': 'linear'}  # تحديد السوق الخطي صراحة
+            params = {'category': 'linear'}
             result = self.exchange.set_leverage(leverage, formatted_symbol, params)
             logger.info(f"✅ تم تعيين الرافعة المالية بنجاح: {result}")
             return True
-        except Exception as set_error:
-            logger.warning(f"⚠️ فشل تعيين الرافعة {leverage}x: {set_error}")
-            fallback_leverage = 10.0
-            logger.info(f"⚡ محاولة تعيين رافعة أقل {fallback_leverage}x")
-            try:
-                params = {'category': 'linear'}
-                result = self.exchange.set_leverage(fallback_leverage, formatted_symbol, params)
-                logger.info(f"✅ تم تعيين الرافعة الاحتياطية بنجاح: {result}")
+        except Exception as e:
+            if "leverage not modified" in str(e).lower():
+                logger.info(f"⚠️ الرافعة {leverage}x هي الرافعة الحالية، متابعة...")
                 return True
-            except Exception as fallback_error:
-                logger.error(f"❌ خطأ في تعيين الرافعة الاحتياطية: {fallback_error}")
-                return False
+            logger.error(f"❌ خطأ في تعيين الرافعة: {e}")
+            raise Exception(f"فشل تعيين الرافعة: {e}")
 
     def set_margin_mode(self, symbol: str, mode: str = "cross") -> bool:
         """ضبط وضع الرافعة المالية إلى 'cross' أو 'isolated'"""
@@ -169,7 +163,7 @@ class BybitTradingAPI:
 
     def create_market_order(self, symbol: str, side: str, amount: float, 
                           stop_loss: float = None, take_profit: float = None) -> Dict[str, Any]:
-        """إنشاء أمر سوق مع إضافة وقف الخسارة والهدف كأوامر منفصلة"""
+        """إنشاء أمر سوق مع إضافة وقف الخسارة والهدف كأوامر مشروطة"""
         try:
             formatted_symbol = self._format_symbol(symbol)
             rounded_amount = self._round_quantity(formatted_symbol, amount)
@@ -183,46 +177,50 @@ class BybitTradingAPI:
                 rounded_amount,
                 params={'reduceOnly': False, 'category': 'linear'}
             )
-            logger.info(f"✅ تم إنشاء الأمر: {order['id']}")
+            logger.info(f"✅ تم إنشاء الأمر السوقي: {order['id']}")
             
-            # إضافة وقف الخسارة
+            # إضافة وقف الخسارة كأمر مشروط
             if stop_loss:
                 rounded_sl = self._round_price(formatted_symbol, stop_loss)
                 sl_side = 'sell' if side == 'buy' else 'buy'
-                trigger_direction = 'below' if side == 'buy' else 'above'  # SL لـ LONG: below, SHORT: above
+                trigger_direction = 'below' if side == 'buy' else 'above'
                 sl_params = {
                     'stopPrice': rounded_sl,
                     'triggerDirection': trigger_direction,
                     'reduceOnly': True,
-                    'category': 'linear'
+                    'category': 'linear',
+                    'orderType': 'Market'  # استخدام Market بدلاً من Stop
                 }
+                logger.info(f"📝 إنشاء أمر وقف الخسارة: سعر={rounded_sl}, اتجاه={trigger_direction}")
                 sl_order = self.exchange.create_order(
                     formatted_symbol,
-                    'stop',
+                    'Market',
                     sl_side,
                     rounded_amount,
-                    None,
+                    rounded_sl,  # السعر هو stopPrice
                     sl_params
                 )
                 logger.info(f"✅ تم تعيين وقف الخسارة: {rounded_sl} (Order ID: {sl_order['id']})")
             
-            # إضافة جني الأرباح
+            # إضافة جني الأرباح كأمر مشروط
             if take_profit:
                 rounded_tp = self._round_price(formatted_symbol, take_profit)
                 tp_side = 'sell' if side == 'buy' else 'buy'
-                trigger_direction = 'above' if side == 'buy' else 'below'  # TP لـ LONG: above, SHORT: below
+                trigger_direction = 'above' if side == 'buy' else 'below'
                 tp_params = {
                     'stopPrice': rounded_tp,
                     'triggerDirection': trigger_direction,
                     'reduceOnly': True,
-                    'category': 'linear'
+                    'category': 'linear',
+                    'orderType': 'Market'  # استخدام Market بدلاً من TakeProfit
                 }
+                logger.info(f"📝 إنشاء أمر جني الأرباح: سعر={rounded_tp}, اتجاه={trigger_direction}")
                 tp_order = self.exchange.create_order(
                     formatted_symbol,
-                    'takeProfit',
+                    'Market',
                     tp_side,
                     rounded_amount,
-                    None,
+                    rounded_tp,  # السعر هو stopPrice
                     tp_params
                 )
                 logger.info(f"✅ تم تعيين الهدف: {rounded_tp} (Order ID: {tp_order['id']})")
@@ -240,7 +238,7 @@ class BybitTradingAPI:
             if not self.set_margin_mode(symbol, "cross"):
                 raise Exception("فشل في ضبط وضع الرافعة المالية إلى 'cross'")
             if not self.set_leverage(symbol):
-                logger.warning("⚠️ فشل تعيين الرافعة المالية، متابعة باستخدام الرافعة الحالية")
+                raise Exception("فشل تعيين الرافعة المالية")
             position_size = self.calculate_position_size(symbol, entry_price)
             side = 'buy' if direction.upper() == 'LONG' else 'sell'
             order = self.create_market_order(
