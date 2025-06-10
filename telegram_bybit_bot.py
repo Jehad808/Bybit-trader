@@ -1,7 +1,7 @@
 import logging
 import configparser
 from telethon import TelegramClient, events
-from bybit_api import open_position
+from bybit_api import BybitTradingAPI
 from signal_parser import TradingSignalParser
 
 # إعدادات اللوج
@@ -19,9 +19,8 @@ api_id = int(config["TELEGRAM"]["API_ID"])
 api_hash = config["TELEGRAM"]["API_HASH"]
 string_session = config["TELEGRAM"]["STRING_SESSION"]
 
-# إعدادات Bybit
-leverage = int(config["BYBIT"]["LEVERAGE"])
-capital_pct = float(config["BYBIT"]["CAPITAL_PERCENTAGE"])
+# إنشاء واجهة Bybit
+trading_api = BybitTradingAPI()
 
 # إنشاء محلل الإشارات
 signal_parser = TradingSignalParser()
@@ -57,18 +56,18 @@ async def handler(event):
         
         # تنفيذ الصفقة
         try:
-            order_id = open_position(
+            result = trading_api.open_position(
                 symbol=signal_data['symbol'],
                 direction=signal_data['direction'],
                 entry_price=signal_data['entry_price'],
                 take_profit=signal_data['take_profit_1'],  # نستخدم الهدف الأول فقط
-                stop_loss=signal_data['stop_loss'],
-                pct=capital_pct,
-                leverage=leverage
+                stop_loss=signal_data['stop_loss']
             )
             
-            logger.info(f"✅ تم فتح الصفقة بنجاح - Order ID: {order_id}")
-            logger.info(f"💰 نسبة رأس المال: {capital_pct}% | 🔢 الرافعة: {leverage}x")
+            if result['status'] == 'success':
+                logger.info(f"✅ تم فتح الصفقة بنجاح - Order ID: {result['order']['id']}")
+            else:
+                logger.error(f"❌ فشل في تنفيذ الصفقة: {result['message']}")
             
         except Exception as trade_error:
             logger.error(f"❌ خطأ في تنفيذ الصفقة: {trade_error}")
@@ -80,7 +79,6 @@ async def main():
     """تشغيل البوت الرئيسي"""
     try:
         logger.info("🚀 بدء تشغيل بوت Bybit Trading...")
-        logger.info(f"⚙️ الإعدادات: رافعة {leverage}x، نسبة رأس المال {capital_pct}%")
         logger.info("📡 البوت يستقبل الرسائل من جميع المحادثات...")
         
         await client.start()
