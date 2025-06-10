@@ -67,17 +67,40 @@ class BybitTradingAPI:
                 symbol = symbol + 'USDT'
         return symbol
 
+    def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
+        """جلب معلومات الرمز من API Bybit المباشر"""
+        try:
+            formatted_symbol = self._format_symbol(symbol)
+            url = "https://api.bybit.com/v5/market/instruments-info"
+            params = {"category": "linear", "symbol": formatted_symbol}
+            response = requests.get(url, params=params)
+            data = response.json()
+            if data['retCode'] == 0 and data['result']['list']:
+                info = data['result']['list'][0]
+                return {
+                    'min_quantity': float(info['lotSizeFilter']['minOrderQty']),
+                    'quantity_step': float(info['lotSizeFilter']['qtyStep']),
+                    'price_precision': float(info['priceFilter']['tickSize']),
+                    'max_leverage': float(info['leverageFilter']['maxLeverage'])
+                }
+            else:
+                logger.error(f"❌ فشل في جلب معلومات الرمز: {data}")
+                raise Exception("فشل في جلب معلومات الرمز")
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب معلومات الرمز: {e}")
+            raise
+
     def _round_quantity(self, symbol: str, quantity: float) -> float:
         """تقريب الكمية حسب قواعد Bybit"""
         try:
-            market = self.exchange.market(symbol)
-            min_amount = market["limits"]["amount"]["min"] or 0.001
-            step = market["precision"]["amount"] or 0.001
+            symbol_info = self._get_symbol_info(symbol)
+            min_quantity = symbol_info['min_quantity']
+            step = symbol_info['quantity_step']
             rounded = math.floor(quantity / step) * step
-            if rounded < min_amount:
-                logger.warning(f"⚠️ الكمية {rounded} أقل من الحد الأدنى {min_amount} لـ {symbol}")
-                rounded = min_amount
-            logger.info(f"📏 الكمية بعد التقريب: {rounded} (الحد الأدنى: {min_amount}, الخطوة: {step})")
+            if rounded < min_quantity:
+                logger.warning(f"⚠️ الكمية {rounded} أقل من الحد الأدنى {min_quantity} لـ {symbol}")
+                rounded = min_quantity
+            logger.info(f"📏 الكمية بعد التقريب: {rounded} (الحد الأدنى: {min_quantity}, الخطوة: {step})")
             return rounded
         except Exception as e:
             logger.warning(f"⚠️ خطأ في تقريب الكمية: {e}")
@@ -86,12 +109,12 @@ class BybitTradingAPI:
     def _round_price(self, symbol: str, price: float) -> float:
         """تقريب السعر حسب قواعد Bybit"""
         try:
-            market = self.exchange.market(symbol)
-            tick_size = market["precision"]["price"] or 0.01
+            symbol_info = self._get_symbol_info(symbol)
+            tick_size = symbol_info['price_precision']
             return round(price / tick_size) * tick_size
         except Exception as e:
             logger.warning(f"⚠️ خطأ في تقريب السعر: {e}")
-            return round(price, 2)
+            return round(price, 8)
 
     def get_balance(self) -> float:
         """الحصول على رصيد USDT من محفظة الفيوتشر"""
@@ -126,20 +149,12 @@ class BybitTradingAPI:
             raise
 
     def get_max_leverage(self, symbol: str) -> float:
-        """جلب أقصى رافعة مالية متاحة لرمز معين عبر API مباشر"""
+        """جلب أقصى رافعة مالية متاحة لرمز معين"""
         try:
-            formatted_symbol = self._format_symbol(symbol)
-            url = "https://api.bybit.com/v5/market/instruments-info"
-            params = {"category": "linear", "symbol": formatted_symbol}
-            response = requests.get(url, params=params)
-            data = response.json()
-            if data['retCode'] == 0 and data['result']['list']:
-                max_leverage = float(data['result']['list'][0]['leverageFilter']['maxLeverage'])
-                logger.info(f"⚡ أقصى رافعة مالية لـ {formatted_symbol}: {max_leverage}x")
-                return max_leverage
-            else:
-                logger.error(f"❌ فشل في جلب معلومات الأداة: {data}")
-                raise Exception("فشل في جلب معلومات الأداة")
+            symbol_info = self._get_symbol_info(symbol)
+            max_leverage = symbol_info['max_leverage']
+            logger.info(f"⚡ أقصى رافعة مالية لـ {symbol}: {max_leverage}x")
+            return max_leverage
         except Exception as e:
             logger.error(f"❌ خطأ في جلب أقصى رافعة مالية: {e}")
             logger.warning("⚠️ استخدام رافعة افتراضية 20x")
@@ -163,18 +178,18 @@ class BybitTradingAPI:
                     return True
                 # محاولة تعيين الرافعة عبر API Bybit المباشر
                 url = "https://api.bybit.com/v5/position/set-leverage"
-                headers = {
-                    "X-BAPI-API-KEY": self.api_key,
-                    "X-BAPI-SIGNATURE": self._sign_request("POST", url, params),
-                    "X-BAPI-TIMESTAMP": str(int(time.time() * 1000)),
-                    "X-BAPI-RECV-WINDOW": "5000",
-                    "Content-Type": "application/json"
-                }
                 payload = {
                     "category": "linear",
                     "symbol": formatted_symbol,
                     "buyLeverage": str(int(leverage)),
                     "sellLeverage": str(int(leverage))
+                }
+                headers = {
+                    "X-BAPI-API-KEY": self.api_key,
+                    "X-BAPI-SIGNATURE": self._sign_request("POST", url, payload),
+                    "X-BAPI-TIMESTAMP": str(int(time.time() * 1000)),
+                    "X-BAPI-RECV-WINDOW": "5000",
+                    "Content-Type": "application/json"
                 }
                 response = requests.post(url, headers=headers, data=json.dumps(payload))
                 data = response.json()
@@ -186,7 +201,7 @@ class BybitTradingAPI:
                     return False
         except Exception as e:
             logger.error(f"❌ خطأ في تعيين الرافعة: {str(e)}")
-            logger.warning("⚠️ متابعة باستخدام الراضة الحالية")
+            logger.warning("⚠️ متابعة باستخدام الرافعة الحالية")
             return True
 
     def set_margin_mode(self, symbol: str, mode: str = "cross") -> bool:
@@ -225,7 +240,7 @@ class BybitTradingAPI:
                 trigger_direction = 'below' if side == 'buy' else 'above'
                 logger.info(f"📝 إنشاء أمر وقف الخسارة: سعر={rounded_sl}, اتجاه={trigger_direction}")
                 sl_params = {
-                    'stopPrice': rounded_sl,
+                    'triggerPrice': rounded_sl,
                     'triggerDirection': trigger_direction,
                     'reduceOnly': True,
                     'category': 'linear',
@@ -233,10 +248,10 @@ class BybitTradingAPI:
                 }
                 sl_order = self.exchange.create_order(
                     formatted_symbol,
-                    'Market',
+                    'Stop',
                     sl_side,
                     rounded_amount,
-                    rounded_sl,
+                    None,
                     sl_params
                 )
                 logger.info(f"✅ تم تعيين وقف الخسارة: {rounded_sl} (Order ID: {sl_order['id']})")
@@ -248,7 +263,7 @@ class BybitTradingAPI:
                 trigger_direction = 'above' if side == 'buy' else 'below'
                 logger.info(f"📝 إنشاء أمر جني الأرباح: سعر={rounded_tp}, اتجاه={trigger_direction}")
                 tp_params = {
-                    'stopPrice': rounded_tp,
+                    'triggerPrice': rounded_tp,
                     'triggerDirection': trigger_direction,
                     'reduceOnly': True,
                     'category': 'linear',
@@ -256,10 +271,10 @@ class BybitTradingAPI:
                 }
                 tp_order = self.exchange.create_order(
                     formatted_symbol,
-                    'Market',
+                    'Stop',
                     tp_side,
                     rounded_amount,
-                    rounded_tp,
+                    None,
                     tp_params
                 )
                 logger.info(f"✅ تم تعيين الهدف: {rounded_tp} (Order ID: {tp_order['id']})")
@@ -341,10 +356,10 @@ class BybitTradingAPI:
                 'message': str(e)
             }
 
-    def _sign_request(self, method: str, url: str, params: Dict) -> str:
+    def _sign_request(self, method: str, url: str, payload: Dict) -> str:
         """إنشاء توقيع للطلبات المباشرة إلى Bybit API"""
         timestamp = str(int(time.time() * 1000))
-        param_str = timestamp + self.api_key + "5000" + (json.dumps(params) if method == "POST" else "")
+        param_str = timestamp + self.api_key + "5000" + json.dumps(payload)
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
             param_str.encode('utf-8'),
