@@ -3,6 +3,10 @@ import ccxt
 import math
 import logging
 import requests
+import json
+import time
+import hmac
+import hashlib
 from decimal import Decimal
 from typing import Dict, Any, Optional
 import configparser
@@ -70,7 +74,11 @@ class BybitTradingAPI:
             min_amount = market["limits"]["amount"]["min"] or 0.001
             step = market["precision"]["amount"] or 0.001
             rounded = math.floor(quantity / step) * step
-            return max(rounded, min_amount)
+            if rounded < min_amount:
+                logger.warning(f"⚠️ الكمية {rounded} أقل من الحد الأدنى {min_amount} لـ {symbol}")
+                rounded = min_amount
+            logger.info(f"📏 الكمية بعد التقريب: {rounded} (الحد الأدنى: {min_amount}, الخطوة: {step})")
+            return rounded
         except Exception as e:
             logger.warning(f"⚠️ خطأ في تقريب الكمية: {e}")
             return round(quantity, 3)
@@ -106,6 +114,10 @@ class BybitTradingAPI:
             quantity = position_value / entry_price
             formatted_symbol = self._format_symbol(symbol)
             rounded_qty = self._round_quantity(formatted_symbol, quantity)
+            # التحقق من أن القيمة الناتجة كافية
+            required_value = rounded_qty * entry_price
+            if required_value > balance:
+                raise RuntimeError(f"❌ القيمة المطلوبة {required_value} USDT تتجاوز الرصيد {balance} USDT")
             logger.info(f"💰 قيمة المركز: {position_value} USDT")
             logger.info(f"📊 الكمية: {rounded_qty}")
             return rounded_qty
@@ -164,21 +176,21 @@ class BybitTradingAPI:
                     "buyLeverage": str(int(leverage)),
                     "sellLeverage": str(int(leverage))
                 }
-                response = requests.post(url, headers=headers, json=payload)
+                response = requests.post(url, headers=headers, data=json.dumps(payload))
                 data = response.json()
                 if data['retCode'] == 0:
-                    logger.info(f"✅ تم تعيين الرافعة عبر API Bybit المباشر: {data}")
+                    logger.info(f"✅ تم تعيين الرافعة عبر API Bybit: {data}")
                     return True
                 else:
                     logger.error(f"❌ فشل تعيين الرافعة عبر API Bybit: {data}")
                     return False
         except Exception as e:
-            logger.error(f"❌ خطأ في تعيين الرافعة: {e}")
-            logger.warning("⚠️ متابعة باستخدام الرافعة الحالية")
-            return True  # إزالة raise exception للسماح بالمتابعة
+            logger.error(f"❌ خطأ في تعيين الرافعة: {str(e)}")
+            logger.warning("⚠️ متابعة باستخدام الراضة الحالية")
+            return True
 
     def set_margin_mode(self, symbol: str, mode: str = "cross") -> bool:
-        """ضبط وضع الرافعة لـ 'cross' أو 'isolated'"""
+        """ضبط وضع الرافعة المالية إلى 'cross' أو 'isolated'"""
         try:
             formatted_symbol = self._format_symbol(symbol)
             self.exchange.set_margin_mode(mode, formatted_symbol, params={'category': 'linear'})
@@ -190,7 +202,7 @@ class BybitTradingAPI:
 
     def create_market_order(self, symbol: str, side: str, amount: float, 
                             stop_loss: float = None, take_profit: float = None) -> Dict[str, Any]:
-        """إنشاء أمر سوق مع إضافة وقف الخسارة والهدف كأوامر مشروطة"""
+        """إنشاء أمر سوقي مع إضافة وقف الخسارة والهدف كأوامر مشروطة"""
         try:
             formatted_symbol = self._format_symbol(symbol)
             rounded_amount = self._round_quantity(formatted_symbol, amount)
@@ -331,9 +343,6 @@ class BybitTradingAPI:
 
     def _sign_request(self, method: str, url: str, params: Dict) -> str:
         """إنشاء توقيع للطلبات المباشرة إلى Bybit API"""
-        import hmac
-        import hashlib
-        import time
         timestamp = str(int(time.time() * 1000))
         param_str = timestamp + self.api_key + "5000" + (json.dumps(params) if method == "POST" else "")
         signature = hmac.new(
