@@ -2,6 +2,7 @@ import os
 import ccxt
 import math
 import logging
+import requests
 from decimal import Decimal
 from typing import Dict, Any, Optional
 import configparser
@@ -135,18 +136,31 @@ class BybitTradingAPI:
             raise
 
     def get_max_leverage(self, symbol: str) -> float:
-        """جلب أقصى رافعة مالية متاحة لرمز معين"""
+        """جلب أقصى رافعة مالية متاحة لرمز معين عبر API مباشر"""
         try:
             formatted_symbol = self._format_symbol(symbol)
-            market = self.exchange.market(formatted_symbol)
-            max_leverage = float(market['info']['leverage_filter']['max_leverage'])
-            logger.info(f"⚡ أقصى رافعة مالية لـ {formatted_symbol}: {max_leverage}x")
-            return max_leverage
+            # استدعاء API لجلب معلومات الأداة
+            url = "https://api.bybit.com/v5/market/instruments-info"
+            params = {
+                "category": "linear",
+                "symbol": formatted_symbol
+            }
+            response = requests.get(url, params=params)
+            data = response.json()
+            
+            if data['retCode'] == 0 and data['result']['list']:
+                max_leverage = float(data['result']['list'][0]['leverageFilter']['maxLeverage'])
+                logger.info(f"⚡ أقصى رافعة مالية لـ {formatted_symbol}: {max_leverage}x")
+                return max_leverage
+            else:
+                logger.error(f"❌ فشل في جلب معلومات الأداة: {data}")
+                raise Exception("فشل في جلب معلومات الأداة")
+                
         except Exception as e:
             logger.error(f"❌ خطأ في جلب أقصى رافعة مالية: {e}")
-            # رافعة افتراضية إذا فشل الجلب
-            logger.warning("⚠️ استخدام رافعة افتراضية 50x")
-            return 50.0
+            # محاولة رافعة أقل كبديل
+            logger.warning("⚠️ استخدام رافعة افتراضية 20x")
+            return 20.0
 
     def set_leverage(self, symbol: str) -> bool:
         """تعيين أقصى رافعة مالية متاحة للرمز"""
@@ -157,11 +171,19 @@ class BybitTradingAPI:
             logger.info(f"⚡ تعيين الرافعة المالية {leverage}x للرمز {formatted_symbol}")
             
             # تعيين الرافعة المالية
-            result = self.exchange.set_leverage(leverage, formatted_symbol)
-            
-            logger.info(f"✅ تم تعيين الرافعة المالية بنجاح: {result}")
-            return True
-            
+            try:
+                result = self.exchange.set_leverage(leverage, formatted_symbol)
+                logger.info(f"✅ تم تعيين الرافعة المالية بنجاح: {result}")
+                return True
+            except Exception as set_error:
+                logger.warning(f"⚠️ فشل تعيين الرافعة {leverage}x: {set_error}")
+                # محاولة رافعة أقل
+                fallback_leverage = 10.0
+                logger.info(f"⚡ محاولة تعيين رافعة أقل {fallback_leverage}x")
+                result = self.exchange.set_leverage(fallback_leverage, formatted_symbol)
+                logger.info(f"✅ تم تعيين الرافعة الاحتياطية بنجاح: {result}")
+                return True
+                
         except Exception as e:
             logger.error(f"❌ خطأ في تعيين الرافعة: {e}")
             return False
@@ -235,7 +257,7 @@ class BybitTradingAPI:
             
             # تعيين أقصى رافعة مالية
             if not self.set_leverage(symbol):
-                raise Exception("فشل في تعيين الرافعة المالية")
+                logger.warning("⚠️ فشل تعيين الرافعة المالية، متابعة باستخدام الرافعة الحالية")
             
             # حساب حجم المركز
             position_size = self.calculate_position_size(symbol, entry_price)
