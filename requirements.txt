@@ -1,4 +1,4 @@
 ccxt>=4.2.86
-telethon==1.36.0
+telethon>=1.37.0
 python-decouple==3.8
 requests>=2.31.0
