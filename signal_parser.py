@@ -5,10 +5,10 @@ from typing import Optional, Dict, Any
 logger = logging.getLogger(__name__)
 
 class TradingSignalParser:
-    """محلل إشارات التداول من Telegram"""
+    """محلل إشارات التداول المحسن من Telegram"""
     
     def __init__(self):
-        # استخراج البيانات regex نماذج
+        # نماذج regex لاستخراج البيانات
         self.patterns = {
             'symbol': [
                 r'Symbol[:\s]*([A-Z0-9]+\.?P?)',
@@ -74,7 +74,7 @@ class TradingSignalParser:
             return None
 
     def normalize_symbol(self, symbol: str) -> Optional[str]:
-        """تطبيع رمز العملة - الإصلاح الجديد"""
+        """تطبيع رمز العملة"""
         if not symbol:
             return None
         
@@ -83,7 +83,7 @@ class TradingSignalParser:
         # إزالة المسافات والرموز غير المرغوبة
         symbol = re.sub(r'[^A-Z0-9.]', '', symbol)
         
-        # إزالة .P إذا كان موجود - هذا هو الإصلاح الرئيسي
+        # إزالة .P إذا كان موجود
         symbol = symbol.replace('.P', '')
         
         # التأكد من وجود USDT
@@ -122,15 +122,15 @@ class TradingSignalParser:
             direction = self.normalize_direction(direction)
             
             # التحقق من البيانات الأساسية
-            if not all([symbol, direction, entry_price, take_profit_1, stop_loss]):
+            if not all([symbol, direction, entry_price]):
                 logger.warning("❌ بيانات الإشارة غير مكتملة")
                 return None
             
             try:
                 entry_price = float(entry_price)
-                take_profit_1 = float(take_profit_1)
+                take_profit_1 = float(take_profit_1) if take_profit_1 else None
                 take_profit_2 = float(take_profit_2) if take_profit_2 else None
-                stop_loss = float(stop_loss)
+                stop_loss = float(stop_loss) if stop_loss else None
             except ValueError:
                 logger.error("❌ خطأ في تحويل الأسعار إلى أرقام")
                 return None
@@ -157,7 +157,7 @@ class TradingSignalParser:
         """التحقق من صحة الإشارة"""
         try:
             # التحقق من البيانات الأساسية
-            required_fields = ['symbol', 'direction', 'entry_price', 'take_profit_1', 'stop_loss']
+            required_fields = ['symbol', 'direction', 'entry_price']
             for field in required_fields:
                 if not signal.get(field):
                     logger.error(f"❌ حقل مطلوب مفقود: {field}")
@@ -171,12 +171,6 @@ class TradingSignalParser:
             # التحقق من صحة الأسعار
             if signal['entry_price'] <= 0:
                 logger.error("❌ سعر الدخول يجب أن يكون أكبر من صفر")
-                return False
-            if signal['take_profit_1'] <= 0:
-                logger.error("❌ الهدف الأول يجب أن يكون أكبر من صفر")
-                return False
-            if signal['stop_loss'] <= 0:
-                logger.error("❌ وقف الخسارة يجب أن يكون أكبر من صفر")
                 return False
             
             # التحقق من منطقية الأسعار
@@ -201,3 +195,4 @@ class TradingSignalParser:
         except Exception as e:
             logger.error(f"❌ خطأ في التحقق من الإشارة: {e}")
             return False
+
