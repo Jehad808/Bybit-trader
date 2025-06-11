@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any
 import configparser
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 
 # إضافة المجلد الحالي لمسار Python
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -102,7 +103,7 @@ class EnhancedBybitTradingBot:
             string_session = os.getenv("TELEGRAM_STRING_SESSION") or self.config.get("TELEGRAM", "STRING_SESSION")
             
             self.telegram_client = TelegramClient(
-                session=string_session,
+                StringSession(string_session),
                 api_id=api_id,
                 api_hash=api_hash
             )
