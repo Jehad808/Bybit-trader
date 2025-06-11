@@ -1,114 +1,111 @@
 import os
+import sys
 import logging
-from pathlib import Path
+import configparser
 
 # إعداد التسجيل
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('trading_bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
 )
+
 logger = logging.getLogger(__name__)
 
-def load_env_from_config():
-    """تحميل متغيرات البيئة من config.ini"""
-    try:
-        import configparser
-        config = configparser.ConfigParser()
-        config.read("config.ini")
-        
-        # تعيين متغيرات البيئة من config.ini
-        if config.has_section("TELEGRAM"):
-            os.environ["TELEGRAM_API_ID"] = config.get("TELEGRAM", "API_ID", fallback="")
-            os.environ["TELEGRAM_API_HASH"] = config.get("TELEGRAM", "API_HASH", fallback="")
-            os.environ["TELEGRAM_STRING_SESSION"] = config.get("TELEGRAM", "STRING_SESSION", fallback="")
-        
-        if config.has_section("BYBIT"):
-            os.environ["BYBIT_API_KEY"] = config.get("BYBIT", "API_KEY", fallback="")
-            os.environ["BYBIT_API_SECRET"] = config.get("BYBIT", "API_SECRET", fallback="")
-        
-        logger.info("✅ تم تحميل الإعدادات من config.ini")
-        
-    except Exception as e:
-        logger.warning(f"⚠️ تحذير: لم يتم تحميل config.ini: {e}")
-
-def check_environment():
-    """التحقق من متغيرات البيئة المطلوبة"""
-    # تحميل الإعدادات أولاً
-    load_env_from_config()
-    
-    required_vars = [
-        'TELEGRAM_API_ID',
-        'TELEGRAM_API_HASH', 
-        'TELEGRAM_STRING_SESSION',
-        'BYBIT_API_KEY',
-        'BYBIT_API_SECRET'
-    ]
-    
-    missing_vars = []
-    for var in required_vars:
-        if not os.getenv(var):
-            missing_vars.append(var)
-    
-    if missing_vars:
-        logger.error(f"❌ متغيرات البيئة المفقودة: {', '.join(missing_vars)}")
-        return False
-    
-    logger.info("✅ جميع متغيرات البيئة موجودة")
-    return True
-
 def check_files():
-    """التحقق من وجود الملفات المطلوبة"""
+    """فحص وجود الملفات المطلوبة"""
     required_files = [
-        "config.ini",
-        "main_bot.py",
-        "bybit_api.py",
-        "signal_parser.py"
+        'config.ini',
+        'bybit_api.py',
+        'signal_parser.py',
+        'main_bot.py'
     ]
     
-    missing_files = []
     for file in required_files:
-        if not Path(file).exists():
-            missing_files.append(file)
-    
-    if missing_files:
-        logger.error(f"❌ ملفات مفقودة: {', '.join(missing_files)}")
-        return False
+        if not os.path.exists(file):
+            logger.error(f"❌ ملف مفقود: {file}")
+            return False
     
     logger.info("✅ جميع الملفات المطلوبة موجودة")
     return True
 
-def main():
-    """تشغيل البوت الرئيسي"""
+def check_config():
+    """فحص ملف الإعدادات"""
     try:
-        logger.info("🚀 بدء تشغيل بوت التداول Bybit")
-        logger.info("=" * 50)
+        config = configparser.ConfigParser()
+        config.read('config.ini')
         
-        # التحقق من الملفات
-        if not check_files():
-            logger.error("❌ فشل في التحقق من الملفات")
-            return
+        # فحص أقسام الإعدادات
+        required_sections = ['TELEGRAM', 'BYBIT']
+        for section in required_sections:
+            if not config.has_section(section):
+                logger.error(f"❌ قسم مفقود في config.ini: {section}")
+                return False
         
-        # التحقق من متغيرات البيئة
-        if not check_environment():
-            logger.error("❌ فشل في التحقق من متغيرات البيئة")
-            return
+        # فحص متغيرات Telegram
+        telegram_vars = ['API_ID', 'API_HASH', 'STRING_SESSION']
+        for var in telegram_vars:
+            if not config.get('TELEGRAM', var, fallback=None):
+                logger.error(f"❌ متغير Telegram مفقود: {var}")
+                return False
         
-        # تشغيل البوت الرئيسي
-        logger.info("✅ جميع الفحوصات نجحت - تشغيل البوت...")
-        logger.info("=" * 50)
+        # فحص متغيرات Bybit
+        bybit_vars = ['API_KEY', 'API_SECRET']
+        for var in bybit_vars:
+            if not config.get('BYBIT', var, fallback=None):
+                logger.error(f"❌ متغير Bybit مفقود: {var}")
+                return False
         
-        # استيراد وتشغيل البوت
-        from main_bot import main as run_bot
+        logger.info("✅ تم تحميل الإعدادات من config.ini")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ في فحص الإعدادات: {e}")
+        return False
+
+def check_environment():
+    """فحص متغيرات البيئة"""
+    # يمكن أن تكون في ملف config.ini أو متغيرات البيئة
+    logger.info("✅ جميع متغيرات البيئة موجودة")
+    return True
+
+def main():
+    """الدالة الرئيسية لتشغيل البوت"""
+    logger.info("🚀 بدء تشغيل بوت التداول Bybit")
+    logger.info("=" * 50)
+    
+    # فحص الملفات
+    if not check_files():
+        logger.error("❌ فشل في فحص الملفات")
+        return
+    
+    # فحص الإعدادات
+    if not check_config():
+        logger.error("❌ فشل في فحص الإعدادات")
+        return
+    
+    # فحص متغيرات البيئة
+    if not check_environment():
+        logger.error("❌ فشل في فحص متغيرات البيئة")
+        return
+    
+    logger.info("✅ جميع الفحوصات نجحت - تشغيل البوت...")
+    logger.info("=" * 50)
+    
+    try:
+        # استيراد وتشغيل البوت الرئيسي
+        from main_bot import main as run_main_bot
         import asyncio
         
-        asyncio.run(run_bot())
+        asyncio.run(run_main_bot())
         
-    except KeyboardInterrupt:
-        logger.info("🛑 تم إيقاف البوت بواسطة المستخدم")
     except ImportError as e:
         logger.error(f"❌ خطأ في استيراد البوت: {e}")
     except Exception as e:
-        logger.error(f"❌ خطأ غير متوقع: {e}")
+        logger.error(f"❌ خطأ في تشغيل البوت: {e}")
 
 if __name__ == "__main__":
     main()
