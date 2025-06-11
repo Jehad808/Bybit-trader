@@ -1,6 +1,7 @@
 import logging
 import configparser
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from bybit_api import BybitTradingAPI
 from signal_parser import TradingSignalParser
 
@@ -26,7 +27,7 @@ trading_api = BybitTradingAPI()
 signal_parser = TradingSignalParser()
 
 # تشغيل البوت
-client = TelegramClient(string_session=string_session, api_id=api_id, api_hash=api_hash)
+client = TelegramClient(StringSession(string_session), api_id, api_hash)
 
 @client.on(events.NewMessage)
 async def handler(event):
