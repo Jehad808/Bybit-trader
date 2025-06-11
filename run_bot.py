@@ -4,6 +4,7 @@ from bybit_api import BybitAPI
 import configparser
 import os
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -24,7 +25,8 @@ def main():
             return
     api_id = os.getenv("TELEGRAM_API_ID")
     api_hash = os.getenv("TELEGRAM_API_HASH")
-    client = TelegramClient('bot_session', api_id, api_hash)
+    session_string = "1BJWap1sBuzv2tw3hiVhZ3e10vz3_cSpG1bKT1BBgRLqrQxhFHuUqh7N9R98azyy1Zmlmc0HhDQ5YwxpBx3eoce4oxVSNbSkp-trmraA6FRFzb4SBRraazuMSr-T0b8IfGMmyxWbmuKc-dFECryr_b58sbtsmbHScnFIr6zYzQIwi-5FHzXDvJxy7tHBVPJjHviohXJQiMhu6rNMHWN0BJAS83koiEQD49yEdW_caziiLevH5HZrwQ2WBGdpZ4s8G_Tjjoxbzf0qSZBW2nJJ4crzrgO3j4h1a5TWdd5wiX4deCIW31X9by_PuLg3GxIcjF7r-VeXu42lY55nRIOAzOKfO99_A5VY="
+    client = TelegramClient(StringSession(session_string), api_id, api_hash)
     try:
         bybit_api = BybitAPI(config_file="config.ini")
     except Exception as e:
