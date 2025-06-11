@@ -25,13 +25,20 @@ def main():
     api_id = os.getenv("TELEGRAM_API_ID")
     api_hash = os.getenv("TELEGRAM_API_HASH")
     client = TelegramClient('bot_session', api_id, api_hash)
-    bybit_api = BybitAPI(config_file="config.ini")
+    try:
+        bybit_api = BybitAPI(config_file="config.ini")
+    except Exception as e:
+        logger.error(f"❌ فشل تهيئة Bybit API: {e}")
+        return
     bot = TradingBot(client, bybit_api, config)
     async def run():
-        await client.start()
-        logger.info("✅ البوت يعمل الآن...")
-        await bot.run()
-        await client.run_until_disconnected()
+        try:
+            await client.start()
+            logger.info("✅ البوت يعمل الآن...")
+            await bot.run()
+            await client.run_until_disconnected()
+        except Exception as e:
+            logger.error(f"❌ خطأ أثناء تشغيل البوت: {e}")
     with client:
         client.loop.run_until_complete(run())
 
