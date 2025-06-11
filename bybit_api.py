@@ -5,6 +5,8 @@ import logging
 import time
 from typing import Dict, Any, Optional
 import configparser
+import pandas as pd
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +77,31 @@ class BybitAPI:
             logger.error(f"❌ Error rounding price: {e}")
             return round(price, 8)
 
-    def _validate_sl_tp(self, symbol: str, side: str, entry_price: float, stop_loss: float, take_profit: float) -> tuple:
+    def _calculate_atr(self, symbol: str, period: int = 14) -> float:
+        try:
+            formatted_symbol = self._format_symbol(symbol)
+            ohlcv = self.exchange.fetch_ohlcv(formatted_symbol, timeframe='1h', limit=period + 1)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            high_low = df['high'] - df['low']
+            high_close = (df['high'] - df['close'].shift()).abs()
+            low_close = (df['low'] - df['close'].shift()).abs()
+            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            atr = tr.rolling(window=period).mean().iloc[-1]
+            return atr if not np.isnan(atr) else 0.01
+        except Exception as e:
+            logger.warning(f"⚠️ Error calculating ATR: {e}")
+            return 0.01
+
+    def _validate_sl_tp(self, symbol: str, side: str, entry_price: float, stop_loss: float, take_profit: float, take_profit_2: float = None) -> tuple:
         try:
             formatted_symbol = self._format_symbol(symbol)
             rounded_sl = self._round_price(formatted_symbol, stop_loss) if stop_loss else None
             rounded_tp = self._round_price(formatted_symbol, take_profit) if take_profit else None
+            rounded_tp2 = self._round_price(formatted_symbol, take_profit_2) if take_profit_2 else None
             ticker = self.exchange.fetch_ticker(formatted_symbol)
             current_price = ticker['last']
-            min_distance = entry_price * 0.02
+            atr = self._calculate_atr(formatted_symbol)
+            min_distance = atr * 0.5
             if side == "buy":
                 if rounded_sl and rounded_sl >= entry_price - min_distance:
                     rounded_sl = entry_price - min_distance
@@ -90,6 +109,9 @@ class BybitAPI:
                 if rounded_tp and rounded_tp <= entry_price + min_distance:
                     rounded_tp = entry_price + min_distance
                     rounded_tp = self._round_price(formatted_symbol, rounded_tp)
+                if rounded_tp2 and rounded_tp2 <= entry_price + min_distance:
+                    rounded_tp2 = entry_price + min_distance
+                    rounded_tp2 = self._round_price(formatted_symbol, rounded_tp2)
             elif side == "sell":
                 if rounded_sl and rounded_sl <= entry_price + min_distance:
                     rounded_sl = entry_price + min_distance
@@ -97,16 +119,13 @@ class BybitAPI:
                 if rounded_tp and rounded_tp >= entry_price - min_distance:
                     rounded_tp = entry_price - min_distance
                     rounded_tp = self._round_price(formatted_symbol, rounded_tp)
-            if rounded_sl and abs(rounded_sl - current_price) < min_distance:
-                logger.warning(f"⚠️ SL too close to current price: {rounded_sl}")
-                rounded_sl = None
-            if rounded_tp and abs(rounded_tp - current_price) < min_distance:
-                logger.warning(f"⚠️ TP too close to current price: {rounded_tp}")
-                rounded_tp = None
-            return rounded_sl, rounded_tp
+                if rounded_tp2 and rounded_tp2 >= entry_price - min_distance:
+                    rounded_tp2 = entry_price - min_distance
+                    rounded_tp2 = self._round_price(formatted_symbol, rounded_tp2)
+            return rounded_sl, rounded_tp, rounded_tp2
         except Exception as e:
             logger.error(f"❌ Error validating SL/TP: {e}")
-            return None, None
+            return None, None, None
 
     def get_balance(self) -> float:
         try:
@@ -147,7 +166,7 @@ class BybitAPI:
             return symbol_info['max_leverage']
         except Exception as e:
             logger.error(f"❌ Error fetching max leverage: {e}")
-            return 1.0  # Fallback to 1x to avoid errors
+            return 1.0
 
     def set_leverage(self, symbol: str) -> bool:
         try:
@@ -183,12 +202,12 @@ class BybitAPI:
             logger.error(f"❌ Error checking position: {e}")
             return False
 
-    def create_market_order(self, symbol: str, side: str, amount: float, stop_loss: float = None, take_profit: float = None) -> Dict[str, Any]:
+    def create_market_order(self, symbol: str, side: str, amount: float, stop_loss: float = None, take_profit: float = None, take_profit_2: float = None) -> Dict[str, Any]:
         try:
             formatted_symbol = self._format_symbol(symbol)
             rounded_amount = self._round_quantity(formatted_symbol, amount)
             entry_price = self.exchange.fetch_ticker(formatted_symbol)['last']
-            rounded_sl, rounded_tp = self._validate_sl_tp(formatted_symbol, side, entry_price, stop_loss, take_profit)
+            rounded_sl, rounded_tp, rounded_tp2 = self._validate_sl_tp(formatted_symbol, side, entry_price, stop_loss, take_profit, take_profit_2)
             order = self.exchange.create_market_order(formatted_symbol, side, rounded_amount, params={'reduceOnly': False, 'category': 'linear'})
             max_attempts = 5
             attempt = 0
@@ -218,20 +237,31 @@ class BybitAPI:
                     'reduceOnly': True,
                     'triggerDirection': tp_trigger
                 })
-                logger.info(f"✅ Set TP: {rounded_tp} (trigger: {tp_trigger})")
+                logger.info(f"✅ Set TP1: {rounded_tp} (trigger: {tp_trigger})")
+            if rounded_tp2:
+                tp_side = "sell" if side == "buy" else "buy"
+                tp_trigger = "above" if side == "buy" else "below"
+                self.exchange.create_order(formatted_symbol, 'market', tp_side, rounded_amount / 2, None, params={
+                    'category': 'linear',
+                    'triggerPrice': rounded_tp2,
+                    'triggerBy': 'LastPrice',
+                    'reduceOnly': True,
+                    'triggerDirection': tp_trigger
+                })
+                logger.info(f"✅ Set TP2: {rounded_tp2} (trigger: {tp_trigger})")
             logger.info(f"✅ Created market order: {order['id']}")
             return order
         except Exception as e:
             logger.error(f"❌ Error creating order: {e}")
             raise
 
-    def open_position(self, symbol: str, direction: str, entry_price: float, stop_loss: float = None, take_profit: float = None) -> Dict[str, Any]:
+    def open_position(self, symbol: str, direction: str, entry_price: float, stop_loss: float = None, take_profit: float = None, take_profit_2: float = None) -> Dict[str, Any]:
         try:
             self.set_margin_mode(symbol, "cross")
             self.set_leverage(symbol)
             position_size = self.calculate_position_size(symbol, entry_price)
             side = 'buy' if direction.upper() == 'LONG' else 'sell'
-            order = self.create_market_order(symbol, side, position_size, stop_loss, take_profit)
+            order = self.create_market_order(symbol, side, position_size, stop_loss, take_profit, take_profit_2)
             logger.info(f"✅ Position opened: {symbol} {direction} @ {entry_price}")
             return {'status': 'success', 'order': order, 'symbol': symbol, 'direction': direction, 'size': position_size, 'entry_price': entry_price}
         except Exception as e:
