@@ -2,3 +2,5 @@ ccxt>=4.3.34
 telethon>=1.37.0
 python-decouple>=3.8
 requests>=2.31.0
+pandas>=2.2.2
+numpy>=1.26.4
