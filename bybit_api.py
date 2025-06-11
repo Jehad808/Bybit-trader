@@ -2,11 +2,8 @@ import os
 import ccxt
 import math
 import logging
-import requests
-import json
 import time
 from typing import Dict, Any, Optional
-from decimal import Decimal
 import configparser
 
 logger = logging.getLogger(__name__)
@@ -15,15 +12,15 @@ class BybitAPI:
     def __init__(self, config_file: str = "config.ini"):
         self.config = configparser.ConfigParser()
         self.config.read(config_file)
-        self.api_key = os.getenv("BYBIT_API_KEY") or self.config.get("BYBIT", "API_KEY", fallback=None)
-        self.api_secret = os.getenv("BYBIT_API_SECRET") or self.config.get("BYBIT", "API_SECRET", fallback=None)
+        self.api_key = os.getenv("BYBIT_API_KEY")
+        self.api_secret = os.getenv("BYBIT_API_SECRET")
         if not (self.api_key and self.api_secret):
             raise RuntimeError("❌ Bybit API keys missing!")
         self.exchange = ccxt.bybit({
             "apiKey": self.api_key,
             "secret": self.api_secret,
             "enableRateLimit": True,
-            "sandbox": True,
+            "test": True,
             "options": {"defaultType": "future", "defaultSubType": "linear"},
         })
         try:
@@ -45,19 +42,13 @@ class BybitAPI:
     def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
         try:
             formatted_symbol = self._format_symbol(symbol)
-            url = "https://api-testnet.bybit.com/v5/market/instruments-info"
-            params = {"category": "linear", "symbol": formatted_symbol}
-            response = requests.get(url, params=params)
-            data = response.json()
-            if data['retCode'] == 0 and data['result']['list']:
-                info = data['result']['list'][0]
-                return {
-                    'min_quantity': float(info['lotSizeFilter']['minOrderQty']),
-                    'quantity_step': float(info['lotSizeFilter']['qtyStep']),
-                    'price_precision': float(info['priceFilter']['tickSize']),
-                    'max_leverage': float(info['leverageFilter']['maxLeverage'])
-                }
-            raise Exception("Failed to fetch symbol info")
+            market = self.exchange.market(formatted_symbol)
+            return {
+                'min_quantity': float(market['limits']['amount']['min']),
+                'quantity_step': float(market['precision']['amount']),
+                'price_precision': float(market['precision']['price']),
+                'max_leverage': float(market['info']['leverageFilter']['maxLeverage'])
+            }
         except Exception as e:
             logger.error(f"❌ Error fetching symbol info: {e}")
             raise
@@ -91,7 +82,7 @@ class BybitAPI:
             rounded_tp = self._round_price(formatted_symbol, take_profit) if take_profit else None
             ticker = self.exchange.fetch_ticker(formatted_symbol)
             current_price = ticker['last']
-            min_distance = entry_price * 0.015
+            min_distance = entry_price * 0.02
             if side == "buy":
                 if rounded_sl and rounded_sl >= entry_price - min_distance:
                     rounded_sl = entry_price - min_distance
@@ -107,13 +98,15 @@ class BybitAPI:
                     rounded_tp = entry_price - min_distance
                     rounded_tp = self._round_price(formatted_symbol, rounded_tp)
             if rounded_sl and abs(rounded_sl - current_price) < min_distance:
-                raise ValueError("SL too close to current price")
+                logger.warning(f"⚠️ SL too close to current price: {rounded_sl}")
+                rounded_sl = None
             if rounded_tp and abs(rounded_tp - current_price) < min_distance:
-                raise ValueError("TP too close to current price")
+                logger.warning(f"⚠️ TP too close to current price: {rounded_tp}")
+                rounded_tp = None
             return rounded_sl, rounded_tp
         except Exception as e:
             logger.error(f"❌ Error validating SL/TP: {e}")
-            raise
+            return None, None
 
     def get_balance(self) -> float:
         try:
@@ -154,13 +147,14 @@ class BybitAPI:
             return symbol_info['max_leverage']
         except Exception as e:
             logger.error(f"❌ Error fetching max leverage: {e}")
-            return 10.0
+            return 5.0
 
     def set_leverage(self, symbol: str) -> bool:
         try:
             formatted_symbol = self._format_symbol(symbol)
-            leverage = min(self.get_max_leverage(formatted_symbol), 10.0)
+            leverage = min(self.get_max_leverage(formatted_symbol), 5.0)
             self.exchange.set_leverage(leverage, formatted_symbol, params={'category': 'linear'})
+            logger.info(f"✅ Set leverage to {leverage}x for {formatted_symbol}")
             return True
         except Exception as e:
             logger.warning(f"⚠️ Failed to set leverage: {e}")
@@ -170,6 +164,7 @@ class BybitAPI:
         try:
             formatted_symbol = self._format_symbol(symbol)
             self.exchange.set_margin_mode(mode, formatted_symbol, params={'category': 'linear'})
+            logger.info(f"✅ Set margin mode to {mode} for {formatted_symbol}")
             return True
         except Exception as e:
             logger.warning(f"⚠️ Failed to set margin mode: {e}")
@@ -195,19 +190,22 @@ class BybitAPI:
             entry_price = self.exchange.fetch_ticker(formatted_symbol)['last']
             rounded_sl, rounded_tp = self._validate_sl_tp(formatted_symbol, side, entry_price, stop_loss, take_profit)
             order = self.exchange.create_market_order(formatted_symbol, side, rounded_amount, params={'reduceOnly': False, 'category': 'linear'})
-            max_attempts = 10
+            max_attempts = 5
             attempt = 0
             while attempt < max_attempts:
                 if self._check_position_exists(formatted_symbol, side):
                     break
-                time.sleep(1)
+                time.sleep(0.5)
                 attempt += 1
             if rounded_sl:
                 sl_side = "sell" if side == "buy" else "buy"
-                sl_order = self.exchange.create_order(formatted_symbol, 'market', sl_side, rounded_amount, None, params={'category': 'linear', 'triggerPrice': rounded_sl, 'triggerBy': 'LastPrice', 'reduceOnly': True})
+                self.exchange.create_order(formatted_symbol, 'market', sl_side, rounded_amount, None, params={'category': 'linear', 'triggerPrice': rounded_sl, 'triggerBy': 'LastPrice', 'reduceOnly': True})
+                logger.info(f"✅ Set SL: {rounded_sl}")
             if rounded_tp:
                 tp_side = "sell" if side == "buy" else "buy"
-                tp_order = self.exchange.create_order(formatted_symbol, 'market', tp_side, rounded_amount, None, params={'category': 'linear', 'triggerPrice': rounded_tp, 'triggerBy': 'LastPrice', 'reduceOnly': True})
+                self.exchange.create_order(formatted_symbol, 'market', tp_side, rounded_amount, None, params={'category': 'linear', 'triggerPrice': rounded_tp, 'triggerBy': 'LastPrice', 'reduceOnly': True})
+                logger.info(f"✅ Set TP: {rounded_tp}")
+            logger.info(f"✅ Created market order: {order['id']}")
             return order
         except Exception as e:
             logger.error(f"❌ Error creating order: {e}")
@@ -220,6 +218,7 @@ class BybitAPI:
             position_size = self.calculate_position_size(symbol, entry_price)
             side = 'buy' if direction.upper() == 'LONG' else 'sell'
             order = self.create_market_order(symbol, side, position_size, stop_loss, take_profit)
+            logger.info(f"✅ Position opened: {symbol} {direction} @ {entry_price}")
             return {'status': 'success', 'order': order, 'symbol': symbol, 'direction': direction, 'size': position_size, 'entry_price': entry_price}
         except Exception as e:
             logger.error(f"❌ Error opening position: {e}")
@@ -244,6 +243,7 @@ class BybitAPI:
             side = 'sell' if position['side'] == 'long' else 'buy'
             amount = abs(position['contracts'])
             order = self.exchange.create_market_order(formatted_symbol, side, amount, params={'reduceOnly': True, 'category': 'linear'})
+            logger.info(f"✅ Closed position: {symbol}")
             return {'status': 'success', 'order': order}
         except Exception as e:
             logger.error(f"❌ Error closing position: {e}")
