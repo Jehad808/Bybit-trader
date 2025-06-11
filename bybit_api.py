@@ -147,12 +147,12 @@ class BybitAPI:
             return symbol_info['max_leverage']
         except Exception as e:
             logger.error(f"❌ Error fetching max leverage: {e}")
-            return 5.0
+            return 1.0  # Fallback to 1x to avoid errors
 
     def set_leverage(self, symbol: str) -> bool:
         try:
             formatted_symbol = self._format_symbol(symbol)
-            leverage = min(self.get_max_leverage(formatted_symbol), 5.0)
+            leverage = self.get_max_leverage(formatted_symbol)
             self.exchange.set_leverage(leverage, formatted_symbol, params={'category': 'linear'})
             logger.info(f"✅ Set leverage to {leverage}x for {formatted_symbol}")
             return True
@@ -199,12 +199,26 @@ class BybitAPI:
                 attempt += 1
             if rounded_sl:
                 sl_side = "sell" if side == "buy" else "buy"
-                self.exchange.create_order(formatted_symbol, 'market', sl_side, rounded_amount, None, params={'category': 'linear', 'triggerPrice': rounded_sl, 'triggerBy': 'LastPrice', 'reduceOnly': True})
-                logger.info(f"✅ Set SL: {rounded_sl}")
+                sl_trigger = "below" if side == "buy" else "above"
+                self.exchange.create_order(formatted_symbol, 'market', sl_side, rounded_amount, None, params={
+                    'category': 'linear',
+                    'triggerPrice': rounded_sl,
+                    'triggerBy': 'LastPrice',
+                    'reduceOnly': True,
+                    'triggerDirection': sl_trigger
+                })
+                logger.info(f"✅ Set SL: {rounded_sl} (trigger: {sl_trigger})")
             if rounded_tp:
                 tp_side = "sell" if side == "buy" else "buy"
-                self.exchange.create_order(formatted_symbol, 'market', tp_side, rounded_amount, None, params={'category': 'linear', 'triggerPrice': rounded_tp, 'triggerBy': 'LastPrice', 'reduceOnly': True})
-                logger.info(f"✅ Set TP: {rounded_tp}")
+                tp_trigger = "above" if side == "buy" else "below"
+                self.exchange.create_order(formatted_symbol, 'market', tp_side, rounded_amount, None, params={
+                    'category': 'linear',
+                    'triggerPrice': rounded_tp,
+                    'triggerBy': 'LastPrice',
+                    'reduceOnly': True,
+                    'triggerDirection': tp_trigger
+                })
+                logger.info(f"✅ Set TP: {rounded_tp} (trigger: {tp_trigger})")
             logger.info(f"✅ Created market order: {order['id']}")
             return order
         except Exception as e:
