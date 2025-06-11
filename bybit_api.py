@@ -45,24 +45,28 @@ class BybitAPI:
         try:
             formatted_symbol = self._format_symbol(symbol)
             market = self.exchange.market(formatted_symbol)
+            leverage = float(market['info'].get('leverageFilter', {}).get('maxLeverage', 25.0))
             return {
-                'min_quantity': float(market['limits']['amount']['min']),
-                'quantity_step': float(market['precision']['amount']),
-                'price_precision': float(market['precision']['price']),
-                'max_leverage': float(market['info']['leverageFilter']['maxLeverage'])
+                'min_quantity': float(market['limits']['amount']['min'] or 0.001),
+                'quantity_step': float(market['precision']['amount'] or 0.001),
+                'price_precision': float(market['precision']['price'] or 0.0001),
+                'max_leverage': leverage
             }
         except Exception as e:
             logger.error(f"❌ Error fetching symbol info: {e}")
-            raise
+            return {
+                'min_quantity': 0.001,
+                'quantity_step': 0.001,
+                'price_precision': 0.0001,
+                'max_leverage': 25.0
+            }
 
     def _round_quantity(self, symbol: str, quantity: float) -> float:
         try:
             symbol_info = self._get_symbol_info(symbol)
             min_quantity = symbol_info['min_quantity']
             step = symbol_info['quantity_step']
-            rounded = math.floor(quantity / step) * step
-            if rounded < min_quantity:
-                rounded = min_quantity
+            rounded = max(math.floor(quantity / step) * step, min_quantity)
             return rounded
         except Exception as e:
             logger.error(f"❌ Error rounding quantity: {e}")
@@ -166,7 +170,7 @@ class BybitAPI:
             return symbol_info['max_leverage']
         except Exception as e:
             logger.error(f"❌ Error fetching max leverage: {e}")
-            return 1.0
+            return 25.0
 
     def set_leverage(self, symbol: str) -> bool:
         try:
@@ -266,7 +270,7 @@ class BybitAPI:
             return {'status': 'success', 'order': order, 'symbol': symbol, 'direction': direction, 'size': position_size, 'entry_price': entry_price}
         except Exception as e:
             logger.error(f"❌ Error opening position: {e}")
-            return {'status': 'error', 'message': str(e)}
+            raise
 
     def get_positions(self) -> list:
         try:
@@ -291,4 +295,4 @@ class BybitAPI:
             return {'status': 'success', 'order': order}
         except Exception as e:
             logger.error(f"❌ Error closing position: {e}")
-            return {'status': 'error', 'message': str(e)}
+            return {'error': str(e)}
