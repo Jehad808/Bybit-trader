@@ -1,3 +1,4 @@
+```python
 import logging
 import re
 from telethon import TelegramClient, events
