@@ -8,7 +8,7 @@ import os
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler()
@@ -26,7 +26,7 @@ async def main():
 
     api_id = config.get('TELEGRAM', 'API_ID')
     api_hash = config.get('TELEGRAM', 'API_HASH')
-    phone = config.get('TELEGRAM', 'PHONE')
+    phone = config.get('TELEGRAM', 'phone_number')  # Changed from PHONE to phone_number
     session_name = config.get('TELEGRAM', 'SESSION_NAME')
     
     client = TelegramClient(session_name, api_id, api_hash)
