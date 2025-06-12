@@ -7,7 +7,6 @@ from typing import Dict, Any, Optional
 import configparser
 import pandas as pd
 import numpy as np
-from pybit.unified_trading import HTTP
 
 logger = logging.getLogger(__name__)
 
@@ -15,23 +14,17 @@ class BybitAPI:
     def __init__(self, config_file: str = "config.ini"):
         self.config = configparser.ConfigParser()
         self.config.read(config_file)
-        self.api_key = os.getenv("BYBIT_API_KEY", self.config.get("BYBIT", "API_KEY"))
-        self.api_secret = os.getenv("BYBIT_API_SECRET", self.config.get("BYBIT", "API_SECRET"))
-        self.testnet = self.config.getboolean("BYBIT", "TESTNET", fallback=True)
+        self.api_key = os.getenv("BYBIT_API_KEY")
+        self.api_secret = os.getenv("BYBIT_API_SECRET")
         if not (self.api_key and self.api_secret):
             raise RuntimeError("❌ Bybit API keys missing!")
         self.exchange = ccxt.bybit({
             "apiKey": self.api_key,
             "secret": self.api_secret,
             "enableRateLimit": True,
-            "test": self.testnet,
+            "test": True,
             "options": {"defaultType": "future", "defaultSubType": "linear"},
         })
-        self.pybit_client = HTTP(
-            testnet=self.testnet,
-            api_key=self.api_key,
-            api_secret=self.api_secret
-        )
         try:
             self.exchange.load_markets()
             logger.info("✅ Loaded Bybit market data.")
@@ -77,13 +70,8 @@ class BybitAPI:
             symbol_info = self._get_symbol_info(symbol)
             min_qty = symbol_info['min_quantity']
             step = symbol_info['quantity_precision']
-            if quantity < min_qty:
-                logger.warning(f"⚠️ Quantity {quantity} below min_qty {min_qty} for {symbol}, adjusting to min_qty")
-                quantity = min_qty
-            precision = max(0, -int(math.log10(step)))
-            rounded = round(max(quantity, min_qty) / step) * step
-            rounded = round(rounded, precision)
-            logger.debug(f"Rounding quantity for {symbol}: input={quantity}, min_qty={min_qty}, step={step}, precision={precision}, rounded={rounded}")
+            rounded = max(math.floor(quantity / step) * step, min_qty)
+            logger.debug(f"Rounding quantity for {symbol}: input={quantity}, min_qty={min_qty}, step={step}, rounded={rounded}")
             return rounded
         except Exception as e:
             logger.error(f"❌ Error rounding quantity for {symbol}: {e}")
@@ -170,12 +158,12 @@ class BybitAPI:
                 raise RuntimeError("Insufficient balance.")
             leverage = self.get_max_leverage(symbol)
             position_value = balance * (self.capital_percentage / 100)  # 5% من الرصيد الحقيقي
-            quantity = position_value / entry_price  # الكمية بدون الرافعة
+            quantity = (position_value * leverage) / entry_price  # تطبيق الرافعة
             formatted_symbol = self._format_symbol(symbol)
             rounded_qty = self._round_quantity(formatted_symbol, quantity)
-            required_value = rounded_qty * entry_price
+            required_value = (rounded_qty * entry_price) / leverage
             if required_value > balance:
-                max_qty = math.floor((balance / entry_price) / self._get_symbol_info(symbol)['quantity_precision']) * self._get_symbol_info(symbol)['quantity_precision']
+                max_qty = math.floor((balance * leverage / entry_price) / self._get_symbol_info(symbol)['quantity_precision']) * self._get_symbol_info(symbol)['quantity_precision']
                 if max_qty >= self._get_symbol_info(symbol)['min_quantity']:
                     rounded_qty = max_qty
                 else:
@@ -198,35 +186,19 @@ class BybitAPI:
         try:
             formatted_symbol = self._format_symbol(symbol)
             leverage = self.get_max_leverage(formatted_symbol)
-            response = self.pybit_client.set_leverage(
-                category='linear',
-                symbol=formatted_symbol,
-                buy_leverage=str(leverage),
-                sell_leverage=str(leverage)
-            )
-            if response['retCode'] == 0:
-                logger.info(f"✅ Set leverage to {leverage}x for {formatted_symbol}")
-                return True
-            else:
-                logger.warning(f"⚠️ Failed to set leverage {leverage}x for {formatted_symbol}: {response['retMsg']}")
-                return False
+            self.exchange.set_leverage(leverage, formatted_symbol, params={'category': 'linear'})
+            logger.info(f"✅ Set leverage to {leverage}x for {formatted_symbol}")
+            return True
         except Exception as e:
-            logger.error(f"❌ Error setting leverage for {formatted_symbol}: {e}")
-            return False
+            logger.warning(f"⚠️ Failed to set leverage for {formatted_symbol}: {e}")
+            return True
 
     def set_margin_mode(self, symbol: str, mode: str = "cross") -> bool:
         try:
             formatted_symbol = self._format_symbol(symbol)
-            response = self.pybit_client.set_margin_mode(
-                setMarginMode=mode.upper(),
-                category='linear'
-            )
-            if response['retCode'] == 0:
-                logger.info(f"✅ Set margin mode to {mode} for {formatted_symbol}")
-                return True
-            else:
-                logger.warning(f"⚠️ Failed to set margin mode for {formatted_symbol}: {response['retMsg']}")
-                return True
+            self.exchange.set_margin_mode(mode, formatted_symbol, params={'category': 'linear'})
+            logger.info(f"✅ Set margin mode to {mode} for {formatted_symbol}")
+            return True
         except Exception as e:
             logger.warning(f"⚠️ Failed to set margin mode for {formatted_symbol}: {e}")
             return True
@@ -234,16 +206,11 @@ class BybitAPI:
     def _check_position_exists(self, symbol: str, side: str) -> bool:
         try:
             formatted_symbol = self._format_symbol(symbol)
-            positions = self.pybit_client.get_positions(
-                category='linear',
-                symbol=formatted_symbol
-            )
-            if positions['retCode'] == 0:
-                for pos in positions['result']['list']:
-                    if float(pos['size']) > 0:
-                        expected_side = 'long' if side == "buy" else 'short'
-                        if pos['side'].lower() == expected_side:
-                            return True
+            positions = self.exchange.fetch_positions([formatted_symbol], params={'category': 'linear'})
+            expected_side = 'long' if side == "buy" else 'short'
+            for pos in positions:
+                if pos['contracts'] > 0 and pos['side'] == expected_side:
+                    return True
             return False
         except Exception as e:
             logger.error(f"❌ Error checking position for {symbol}: {e}")
@@ -252,16 +219,11 @@ class BybitAPI:
     def _cancel_open_orders(self, symbol: str) -> bool:
         try:
             formatted_symbol = self._format_symbol(symbol)
-            response = self.pybit_client.cancel_all_orders(
-                category='linear',
-                symbol=formatted_symbol
-            )
-            if response['retCode'] == 0:
-                logger.info(f"✅ Canceled all open orders for {formatted_symbol}")
-                return True
-            else:
-                logger.warning(f"⚠️ Failed to cancel orders for {formatted_symbol}: {response['retMsg']}")
-                return False
+            open_orders = self.exchange.fetch_open_orders(formatted_symbol, params={'category': 'linear'})
+            for order in open_orders:
+                self.exchange.cancel_order(order['id'], formatted_symbol, params={'category': 'linear'})
+                logger.info(f"✅ Canceled order: {order['id']} for {formatted_symbol}")
+            return True
         except Exception as e:
             logger.warning(f"⚠️ Failed to cancel orders for {formatted_symbol}: {e}")
             return False
@@ -272,18 +234,7 @@ class BybitAPI:
             rounded_amount = self._round_quantity(formatted_symbol, amount)
             entry_price = self.exchange.fetch_ticker(formatted_symbol)['last']
             rounded_sl, rounded_tp, rounded_tp2 = self._validate_sl_tp(formatted_symbol, side, entry_price, stop_loss, take_profit, take_profit_2)
-            order = self.pybit_client.place_order(
-                category='linear',
-                symbol=formatted_symbol,
-                side=side.capitalize(),
-                order_type='Market',
-                qty=str(rounded_amount),
-                time_in_force='GTC',
-                reduce_only=False
-            )
-            if order['retCode'] != 0:
-                raise Exception(f"Failed to place order: {order['retMsg']}")
-            order_id = order['result']['orderId']
+            order = self.exchange.create_market_order(formatted_symbol, side, rounded_amount, params={'reduceOnly': False, 'category': 'linear'})
             max_attempts = 5
             attempt = 0
             while attempt < max_attempts:
@@ -292,52 +243,40 @@ class BybitAPI:
                 time.sleep(0.5)
                 attempt += 1
             if rounded_sl:
-                sl_side = "Sell" if side == "buy" else "Buy"
+                sl_side = "sell" if side == "buy" else "buy"
                 sl_trigger = "below" if side == "buy" else "above"
-                self.pybit_client.place_order(
-                    category='linear',
-                    symbol=formatted_symbol,
-                    side=sl_side,
-                    order_type='Market',
-                    qty=str(rounded_amount),
-                    trigger_price=str(rounded_sl),
-                    trigger_by='LastPrice',
-                    reduce_only=True,
-                    time_in_force='GTC'
-                )
+                self.exchange.create_order(formatted_symbol, 'market', sl_side, rounded_amount, None, params={
+                    'category': 'linear',
+                    'triggerPrice': rounded_sl,
+                    'triggerBy': 'LastPrice',
+                    'reduceOnly': True,
+                    'triggerDirection': sl_trigger
+                })
                 logger.info(f"✅ Set SL: {rounded_sl} (trigger: {sl_trigger})")
             if rounded_tp:
-                tp_side = "Sell" if side == "buy" else "Buy"
+                tp_side = "sell" if side == "buy" else "buy"
                 tp_trigger = "above" if side == "buy" else "below"
-                self.pybit_client.place_order(
-                    category='linear',
-                    symbol=formatted_symbol,
-                    side=tp_side,
-                    order_type='Market',
-                    qty=str(rounded_amount),
-                    trigger_price=str(rounded_tp),
-                    trigger_by='LastPrice',
-                    reduce_only=True,
-                    time_in_force='GTC'
-                )
+                self.exchange.create_order(formatted_symbol, 'market', tp_side, rounded_amount, None, params={
+                    'category': 'linear',
+                    'triggerPrice': rounded_tp,
+                    'triggerBy': 'LastPrice',
+                    'reduceOnly': True,
+                    'triggerDirection': tp_trigger
+                })
                 logger.info(f"✅ Set TP1: {rounded_tp} (trigger: {tp_trigger})")
             if rounded_tp2:
-                tp_side = "Sell" if side == "buy" else "Buy"
+                tp_side = "sell" if side == "buy" else "buy"
                 tp_trigger = "above" if side == "buy" else "below"
-                self.pybit_client.place_order(
-                    category='linear',
-                    symbol=formatted_symbol,
-                    side=tp_side,
-                    order_type='Market',
-                    qty=str(rounded_amount / 2),
-                    trigger_price=str(rounded_tp2),
-                    trigger_by='LastPrice',
-                    reduce_only=True,
-                    time_in_force='GTC'
-                )
+                self.exchange.create_order(formatted_symbol, 'market', tp_side, rounded_amount / 2, None, params={
+                    'category': 'linear',
+                    'triggerPrice': rounded_tp2,
+                    'triggerBy': 'LastPrice',
+                    'reduceOnly': True,
+                    'triggerDirection': tp_trigger
+                })
                 logger.info(f"✅ Set TP2: {rounded_tp2} (trigger: {tp_trigger})")
-            logger.info(f"✅ Created market order: {order_id}")
-            return {'id': order_id, 'symbol': formatted_symbol, 'side': side, 'amount': rounded_amount}
+            logger.info(f"✅ Created market order: {order['id']}")
+            return order
         except Exception as e:
             logger.error(f"❌ Error creating order for {symbol}: {e}")
             raise
@@ -345,8 +284,7 @@ class BybitAPI:
     def open_position(self, symbol: str, direction: str, entry_price: float, stop_loss: float = None, take_profit: float = None, take_profit_2: float = None) -> Dict[str, Any]:
         try:
             self.set_margin_mode(symbol, "cross")
-            if not self.set_leverage(symbol):
-                logger.warning(f"⚠️ Using default leverage for {symbol}")
+            self.set_leverage(symbol)
             position_size = self.calculate_position_size(symbol, entry_price)
             side = 'buy' if direction.upper() == 'LONG' else 'sell'
             order = self.create_market_order(symbol, side, position_size, stop_loss, take_profit, take_profit_2)
@@ -358,11 +296,9 @@ class BybitAPI:
 
     def get_positions(self) -> list:
         try:
-            positions = self.pybit_client.get_positions(category='linear')
-            if positions['retCode'] == 0:
-                open_positions = [pos for pos in positions['result']['list'] if float(pos['size']) > 0]
-                return open_positions
-            return []
+            positions = self.exchange.fetch_positions(params={'category': 'linear'})
+            open_positions = [pos for pos in positions if pos['contracts'] > 0]
+            return open_positions
         except Exception as e:
             logger.error(f"❌ Error fetching positions: {e}")
             return []
@@ -374,22 +310,12 @@ class BybitAPI:
             position = next((pos for pos in positions if pos['symbol'] == formatted_symbol), None)
             if not position:
                 return {'status': 'error', 'message': 'No open position'}
-            side = 'Sell' if position['side'].lower() == 'long' else 'Buy'
-            amount = float(position['size'])
-            order = self.pybit_client.place_order(
-                category='linear',
-                symbol=formatted_symbol,
-                side=side,
-                order_type='Market',
-                qty=str(amount),
-                reduce_only=True,
-                time_in_force='GTC'
-            )
-            if order['retCode'] != 0:
-                raise Exception(f"Failed to close position: {order['retMsg']}")
+            side = 'sell' if position['side'] == 'long' else 'buy'
+            amount = abs(position['contracts'])
+            order = self.exchange.create_market_order(formatted_symbol, side, amount, params={'reduceOnly': True, 'category': 'linear'})
             self._cancel_open_orders(formatted_symbol)
             logger.info(f"✅ Closed position: {symbol}")
-            return {'status': 'success', 'order': {'id': order['result']['orderId']}}
+            return {'status': 'success', 'order': order}
         except Exception as e:
             logger.error(f"❌ Error closing position for {symbol}: {e}")
             return {'status': 'error', 'message': str(e)}
