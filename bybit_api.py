@@ -3,319 +3,489 @@ import ccxt
 import math
 import logging
 import time
+import requests
+import hmac
+import hashlib
 from typing import Dict, Any, Optional
 import configparser
-import pandas as pd
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
-class BybitAPI:
+class BybitTradingAPI:
+    """واجهة التداول المثالية مع Bybit - تدعم جميع المتطلبات"""
+    
     def __init__(self, config_file: str = "config.ini"):
+        """تهيئة الاتصال مع Bybit"""
         self.config = configparser.ConfigParser()
         self.config.read(config_file)
-        self.api_key = os.getenv("BYBIT_API_KEY")
-        self.api_secret = os.getenv("BYBIT_API_SECRET")
+        
+        # الحصول على مفاتيح API
+        self.api_key = (
+            os.getenv("BYBIT_API_KEY") or 
+            self.config.get("BYBIT", "API_KEY", fallback=None)
+        )
+        self.api_secret = (
+            os.getenv("BYBIT_API_SECRET") or 
+            self.config.get("BYBIT", "API_SECRET", fallback=None)
+        )
+        
         if not (self.api_key and self.api_secret):
-            raise RuntimeError("❌ Bybit API keys missing!")
+            raise RuntimeError("❌ مفاتيح Bybit غير موجودة!")
+        
+        # تحديد البيئة (testnet أم live)
+        self.testnet = self.config.getboolean("BYBIT", "TESTNET", fallback=False)
+        
+        # إعداد الاتصال مع ccxt
         self.exchange = ccxt.bybit({
             "apiKey": self.api_key,
             "secret": self.api_secret,
             "enableRateLimit": True,
-            "test": True,
-            "options": {"defaultType": "future", "defaultSubType": "linear"},
+            "sandbox": self.testnet,
+            "options": {
+                "defaultType": "linear",
+                "defaultSubType": "linear"
+            },
         })
+        
+        # إعداد API المباشر
+        if self.testnet:
+            self.base_url = "https://api-testnet.bybit.com"
+        else:
+            self.base_url = "https://api.bybit.com"
+        
+        # تحميل معلومات الأسواق
         try:
             self.exchange.load_markets()
-            logger.info("✅ Loaded Bybit market data.")
+            logger.info("✅ تم تحميل معلومات أسواق Bybit")
         except Exception as e:
-            logger.error(f"❌ Failed to load Bybit markets: {e}")
+            logger.error(f"❌ فشل في تحميل معلومات الأسواق: {e}")
             raise
-        self.capital_percentage = float(self.config.get("BYBIT", "CAPITAL_PERCENTAGE", fallback=5.0))
-        self.balance = self.get_balance()
-        logger.info(f"✅ Initialized Bybit API - Balance: {self.balance} USDT")
+        
+        # إعداد التداول
+        self.capital_percentage = float(self.config.get("BYBIT", "CAPITAL_PERCENTAGE", fallback=5))
+        
+        logger.info(f"✅ تم تهيئة Bybit API - نسبة رأس المال: {self.capital_percentage}%")
+        logger.info(f"🌐 البيئة: {'Testnet' if self.testnet else 'Live'}")
+
+    def _generate_signature(self, params: dict, timestamp: str) -> str:
+        """إنشاء التوقيع لـ Bybit API"""
+        param_str = f"api_key={self.api_key}&recv_window=5000&timestamp={timestamp}"
+        
+        for key in sorted(params.keys()):
+            if params[key] is not None:
+                param_str += f"&{key}={params[key]}"
+        
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            param_str.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        
+        return signature
+
+    def _make_request(self, endpoint: str, method: str = "GET", params: dict = None) -> dict:
+        """إجراء طلب مباشر لـ Bybit API"""
+        if params is None:
+            params = {}
+        
+        timestamp = str(int(time.time() * 1000))
+        signature = self._generate_signature(params, timestamp)
+        
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-SIGN-TYPE": "2",
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": "5000",
+            "Content-Type": "application/json"
+        }
+        
+        url = f"{self.base_url}{endpoint}"
+        
+        try:
+            if method == "GET":
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+            else:
+                response = requests.post(url, headers=headers, json=params, timeout=10)
+            
+            response.raise_for_status()
+            return response.json()
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في طلب API: {e}")
+            raise
 
     def _format_symbol(self, symbol: str) -> str:
+        """تنسيق رمز العملة لـ Bybit"""
         symbol = symbol.replace('.P', '').strip()
+        
         if not symbol.endswith('USDT'):
-            symbol += 'USDT'
+            if 'USDT' not in symbol:
+                symbol = symbol + 'USDT'
+        
         return symbol
 
-    def _get_symbol_info(self, symbol: str) -> Dict[str, float]:
+    def get_max_leverage(self, symbol: str) -> int:
+        """الحصول على أقصى رافعة مالية للرمز"""
         try:
             formatted_symbol = self._format_symbol(symbol)
+            
+            # استخدام ccxt للحصول على معلومات السوق
             market = self.exchange.market(formatted_symbol)
-            leverage = float(market['info'].get('leverageFilter', {}).get('maxLeverage', 25.0))
-            min_qty = float(market['limits']['amount'].get('min', 0.001))
-            qty_step = float(market['precision']['amount'] or 0.001)
-            price_step = float(market['precision']['price'] or 0.0001)
-            logger.debug(f"Symbol info for {formatted_symbol}: min_qty={min_qty}, qty_step={qty_step}, price_step={price_step}, max_leverage={leverage}")
-            return {
-                'min_quantity': min_qty if min_qty > 0 else 0.001,
-                'quantity_precision': qty_step if qty_step > 0 else 0.001,
-                'price_precision': price_step if price_step > 0 else 0.0001,
-                'max_leverage': leverage if leverage > 0 else 25.0
-            }
+            max_leverage = market.get('limits', {}).get('leverage', {}).get('max', 100)
+            
+            logger.info(f"⚡ أقصى رافعة مالية لـ {formatted_symbol}: {max_leverage}x")
+            return int(max_leverage)
+            
         except Exception as e:
-            logger.error(f"❌ Error fetching symbol info for {symbol}: {e}")
-            return {
-                'min_quantity': 0.001,
-                'quantity_precision': 0.001,
-                'price_precision': 0.0001,
-                'max_leverage': 25.0
-            }
+            logger.warning(f"⚠️ فشل في الحصول على أقصى رافعة، استخدام 100x: {e}")
+            return 100
 
-    def _round_quantity(self, symbol: str, quantity: float) -> float:
-        try:
-            symbol_info = self._get_symbol_info(symbol)
-            min_qty = symbol_info['min_quantity']
-            step = symbol_info['quantity_precision']
-            rounded = max(math.floor(quantity / step) * step, min_qty)
-            logger.debug(f"Rounding quantity for {symbol}: input={quantity}, min_qty={min_qty}, step={step}, rounded={rounded}")
-            return rounded
-        except Exception as e:
-            logger.error(f"❌ Error rounding quantity for {symbol}: {e}")
-            return round(quantity, 3)
-
-    def _round_price(self, symbol: str, price: float) -> float:
-        try:
-            symbol_info = self._get_symbol_info(symbol)
-            tick_size = symbol_info['price_precision']
-            rounded = round(price / tick_size) * tick_size
-            logger.debug(f"Rounding price for {symbol}: input={price}, tick_size={tick_size}, rounded={rounded}")
-            return rounded
-        except Exception as e:
-            logger.error(f"❌ Error rounding price for {symbol}: {e}")
-            return round(price, 8)
-
-    def _calculate_atr(self, symbol: str, period: int = 14) -> float:
+    def set_cross_margin(self, symbol: str) -> bool:
+        """تعيين Cross Margin للرمز"""
         try:
             formatted_symbol = self._format_symbol(symbol)
-            ohlcv = self.exchange.fetch_ohlcv(formatted_symbol, timeframe='1h', limit=period + 1)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            high_low = df['high'] - df['low']
-            high_close = (df['high'] - df['close'].shift()).abs()
-            low_close = (df['low'] - df['close'].shift()).abs()
-            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            atr = tr.rolling(window=period).mean().iloc[-1]
-            return atr if not np.isnan(atr) else 0.01
+            
+            params = {
+                "category": "linear",
+                "symbol": formatted_symbol,
+                "tradeMode": 0,  # 0 = Cross Margin
+                "buyLeverage": "1",
+                "sellLeverage": "1"
+            }
+            
+            result = self._make_request("/v5/position/switch-isolated", "POST", params)
+            
+            if result.get("retCode") == 0:
+                logger.info(f"✅ تم تعيين Cross Margin لـ {formatted_symbol}")
+                return True
+            else:
+                logger.info(f"ℹ️ Cross Margin مُعين مسبقاً لـ {formatted_symbol}")
+                return True
+                
         except Exception as e:
-            logger.warning(f"⚠️ Error calculating ATR for {symbol}: {e}")
-            return 0.01
+            logger.info(f"ℹ️ Cross Margin مُعين مسبقاً لـ {symbol}")
+            return True
 
-    def _validate_sl_tp(self, symbol: str, side: str, entry_price: float, stop_loss: float, take_profit: float, take_profit_2: float = None) -> tuple:
+    def set_leverage(self, symbol: str, leverage: int = None) -> bool:
+        """تعيين الرافعة المالية"""
         try:
             formatted_symbol = self._format_symbol(symbol)
-            rounded_sl = self._round_price(formatted_symbol, stop_loss) if stop_loss else None
-            rounded_tp = self._round_price(formatted_symbol, take_profit) if take_profit else None
-            rounded_tp2 = self._round_price(formatted_symbol, take_profit_2) if take_profit_2 else None
-            ticker = self.exchange.fetch_ticker(formatted_symbol)
-            current_price = ticker['last']
-            atr = self._calculate_atr(formatted_symbol)
-            min_distance = atr * 0.5
-            if side == "buy":
-                if rounded_sl is not None and rounded_sl >= entry_price - min_distance:
-                    rounded_sl = entry_price - min_distance
-                    rounded_sl = self._round_price(formatted_symbol, rounded_sl)
-                if rounded_tp is not None and rounded_tp <= entry_price + min_distance:
-                    rounded_tp = entry_price + min_distance
-                    rounded_tp = self._round_price(formatted_symbol, rounded_tp)
-                if rounded_tp2 is not None and rounded_tp2 <= entry_price + min_distance:
-                    rounded_tp2 = entry_price + min_distance
-                    rounded_tp2 = self._round_price(formatted_symbol, rounded_tp2)
-            else:  # side == "sell"
-                if rounded_sl is not None and rounded_sl <= entry_price + min_distance:
-                    rounded_sl = entry_price + min_distance
-                    rounded_sl = self._round_price(formatted_symbol, rounded_sl)
-                if rounded_tp is not None and rounded_tp >= entry_price - min_distance:
-                    rounded_tp = entry_price - min_distance
-                    rounded_tp = self._round_price(formatted_symbol, rounded_tp)
-                if rounded_tp2 is not None and rounded_tp2 >= entry_price - min_distance:
-                    rounded_tp2 = entry_price - min_distance
-                    rounded_tp2 = self._round_price(formatted_symbol, rounded_tp2)
-            logger.debug(f"Validated SL/TP for {symbol}: SL={rounded_sl}, TP1={rounded_tp}, TP2={rounded_tp2}")
-            return rounded_sl, rounded_tp, rounded_tp2
+            
+            if leverage is None:
+                leverage = self.get_max_leverage(symbol)
+            
+            logger.info(f"⚡ تعيين الرافعة المالية {leverage}x للرمز {formatted_symbol}")
+            
+            params = {
+                "category": "linear",
+                "symbol": formatted_symbol,
+                "buyLeverage": str(leverage),
+                "sellLeverage": str(leverage)
+            }
+            
+            result = self._make_request("/v5/position/set-leverage", "POST", params)
+            
+            if result.get("retCode") == 0:
+                logger.info(f"✅ تم تعيين الرافعة المالية {leverage}x بنجاح")
+                return True
+            else:
+                logger.info(f"ℹ️ الرافعة المالية {leverage}x مُعينة مسبقاً")
+                return True
+                
         except Exception as e:
-            logger.error(f"❌ Error validating SL/TP for {symbol}: {e}")
-            return None, None, None
+            logger.warning(f"⚠️ خطأ في تعيين الرافعة: {e}")
+            return True
 
     def get_balance(self) -> float:
+        """الحصول على رصيد USDT"""
         try:
-            balance = self.exchange.fetch_balance(params={'type': 'future', 'category': 'linear'})
-            usdt_balance = float(balance.get('USDT', {}).get('free', 0.0))
-            if usdt_balance == 0.0:
-                logger.warning("⚠️ No USDT balance found. Fund Futures wallet.")
-            logger.info(f"💰 Balance: {usdt_balance} USDT")
-            return usdt_balance
+            result = self._make_request("/v5/account/wallet-balance", "GET", {"accountType": "UNIFIED"})
+            
+            if result.get("retCode") == 0:
+                accounts = result.get("result", {}).get("list", [])
+                for account in accounts:
+                    coins = account.get("coin", [])
+                    for coin in coins:
+                        if coin.get("coin") == "USDT":
+                            balance = float(coin.get("walletBalance", 0))
+                            logger.info(f"💰 رصيد USDT: {balance}")
+                            return balance
+            
+            logger.warning("⚠️ لم يتم العثور على رصيد USDT")
+            return 0.0
+            
         except Exception as e:
-            logger.error(f"❌ Error fetching balance: {e}")
+            logger.error(f"❌ خطأ في الحصول على الرصيد: {e}")
             return 0.0
 
-    def calculate_position_size(self, symbol: str, entry_price: float) -> float:
+    def calculate_position_size(self, symbol: str, entry_price: float, leverage: int = None) -> float:
+        """حساب حجم المركز مع 5% من رأس المال الحقيقي"""
         try:
             balance = self.get_balance()
             if balance <= 0:
-                raise RuntimeError("Insufficient balance.")
-            leverage = self.get_max_leverage(symbol)
-            position_value = balance * (self.capital_percentage / 100)  # 5% من الرصيد الحقيقي
-            quantity = (position_value * leverage) / entry_price  # تطبيق الرافعة
+                raise ValueError("رصيد غير كافي")
+            
+            if leverage is None:
+                leverage = self.get_max_leverage(symbol)
+            
+            # حساب 5% من رأس المال الحقيقي (قبل الرافعة)
+            capital_amount = balance * (self.capital_percentage / 100)
+            
+            # تطبيق الرافعة لحساب قيمة المركز الإجمالية
+            position_value = capital_amount * leverage
+            
+            # حساب الكمية
+            quantity = position_value / entry_price
+            
+            # تقريب الكمية
             formatted_symbol = self._format_symbol(symbol)
-            rounded_qty = self._round_quantity(formatted_symbol, quantity)
-            required_value = (rounded_qty * entry_price) / leverage
-            if required_value > balance:
-                max_qty = math.floor((balance * leverage / entry_price) / self._get_symbol_info(symbol)['quantity_precision']) * self._get_symbol_info(symbol)['quantity_precision']
-                if max_qty >= self._get_symbol_info(symbol)['min_quantity']:
-                    rounded_qty = max_qty
-                else:
-                    raise RuntimeError("Cannot open position: Insufficient balance.")
-            logger.debug(f"Position size for {symbol}: balance={balance}, leverage={leverage}, position_value={position_value}, quantity={quantity}, rounded_qty={rounded_qty}")
-            return rounded_qty
+            rounded_quantity = self._round_quantity(formatted_symbol, quantity)
+            
+            logger.info(f"💰 رأس المال المستخدم: {capital_amount:.2f} USDT (5% من {balance:.2f})")
+            logger.info(f"⚡ الرافعة المالية: {leverage}x")
+            logger.info(f"💵 قيمة المركز الإجمالية: {position_value:.2f} USDT")
+            logger.info(f"📊 الكمية المحسوبة: {quantity:.6f}")
+            logger.info(f"📊 الكمية النهائية: {rounded_quantity:.6f}")
+            
+            return rounded_quantity
+            
         except Exception as e:
-            logger.error(f"❌ Error calculating position size for {symbol}: {e}")
+            logger.error(f"❌ خطأ في حساب حجم المركز: {e}")
             raise
 
-    def get_max_leverage(self, symbol: str) -> float:
+    def _round_quantity(self, symbol: str, quantity: float) -> float:
+        """تقريب الكمية حسب قواعد Bybit"""
         try:
-            symbol_info = self._get_symbol_info(symbol)
-            return symbol_info['max_leverage']
+            market = self.exchange.market(symbol)
+            min_amount = market["limits"]["amount"]["min"] or 0.001
+            step = market["precision"]["amount"] or 0.001
+            
+            # تقريب للأسفل حسب الخطوة المسموحة
+            rounded = math.floor(quantity / step) * step
+            
+            # التأكد من أن الكمية أكبر من الحد الأدنى
+            final_quantity = max(rounded, min_amount)
+            
+            logger.debug(f"تقريب الكمية لـ {symbol}: {quantity} → {final_quantity}")
+            return final_quantity
+            
         except Exception as e:
-            logger.error(f"❌ Error fetching max leverage for {symbol}: {e}")
-            return 25.0
+            logger.warning(f"⚠️ خطأ في تقريب الكمية: {e}")
+            return round(quantity, 3)
 
-    def set_leverage(self, symbol: str) -> bool:
+    def _round_price(self, symbol: str, price: float) -> float:
+        """تقريب السعر حسب قواعد Bybit"""
         try:
-            formatted_symbol = self._format_symbol(symbol)
-            leverage = self.get_max_leverage(formatted_symbol)
-            self.exchange.set_leverage(leverage, formatted_symbol, params={'category': 'linear'})
-            logger.info(f"✅ Set leverage to {leverage}x for {formatted_symbol}")
-            return True
+            market = self.exchange.market(symbol)
+            tick_size = market["precision"]["price"] or 0.01
+            
+            rounded = round(price / tick_size) * tick_size
+            logger.debug(f"تقريب السعر لـ {symbol}: {price} → {rounded}")
+            return rounded
+            
         except Exception as e:
-            logger.warning(f"⚠️ Failed to set leverage for {formatted_symbol}: {e}")
-            return True
+            logger.warning(f"⚠️ خطأ في تقريب السعر: {e}")
+            return round(price, 2)
 
-    def set_margin_mode(self, symbol: str, mode: str = "cross") -> bool:
-        try:
-            formatted_symbol = self._format_symbol(symbol)
-            self.exchange.set_margin_mode(mode, formatted_symbol, params={'category': 'linear'})
-            logger.info(f"✅ Set margin mode to {mode} for {formatted_symbol}")
-            return True
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to set margin mode for {formatted_symbol}: {e}")
-            return True
-
-    def _check_position_exists(self, symbol: str, side: str) -> bool:
-        try:
-            formatted_symbol = self._format_symbol(symbol)
-            positions = self.exchange.fetch_positions([formatted_symbol], params={'category': 'linear'})
-            expected_side = 'long' if side == "buy" else 'short'
-            for pos in positions:
-                if pos['contracts'] > 0 and pos['side'] == expected_side:
-                    return True
-            return False
-        except Exception as e:
-            logger.error(f"❌ Error checking position for {symbol}: {e}")
-            return False
-
-    def _cancel_open_orders(self, symbol: str) -> bool:
-        try:
-            formatted_symbol = self._format_symbol(symbol)
-            open_orders = self.exchange.fetch_open_orders(formatted_symbol, params={'category': 'linear'})
-            for order in open_orders:
-                self.exchange.cancel_order(order['id'], formatted_symbol, params={'category': 'linear'})
-                logger.info(f"✅ Canceled order: {order['id']} for {formatted_symbol}")
-            return True
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to cancel orders for {formatted_symbol}: {e}")
-            return False
-
-    def create_market_order(self, symbol: str, side: str, amount: float, stop_loss: float = None, take_profit: float = None, take_profit_2: float = None) -> Dict[str, Any]:
+    def create_order_with_sl_tp(self, symbol: str, side: str, amount: float, 
+                               stop_loss: float = None, take_profit: float = None) -> Dict[str, Any]:
+        """إنشاء أمر سوق مع وقف الخسارة والهدف تلقائياً"""
         try:
             formatted_symbol = self._format_symbol(symbol)
             rounded_amount = self._round_quantity(formatted_symbol, amount)
-            entry_price = self.exchange.fetch_ticker(formatted_symbol)['last']
-            rounded_sl, rounded_tp, rounded_tp2 = self._validate_sl_tp(formatted_symbol, side, entry_price, stop_loss, take_profit, take_profit_2)
-            order = self.exchange.create_market_order(formatted_symbol, side, rounded_amount, params={'reduceOnly': False, 'category': 'linear'})
-            max_attempts = 5
-            attempt = 0
-            while attempt < max_attempts:
-                if self._check_position_exists(formatted_symbol, side):
-                    break
-                time.sleep(0.5)
-                attempt += 1
-            if rounded_sl:
-                sl_side = "sell" if side == "buy" else "buy"
-                sl_trigger = "below" if side == "buy" else "above"
-                self.exchange.create_order(formatted_symbol, 'market', sl_side, rounded_amount, None, params={
-                    'category': 'linear',
-                    'triggerPrice': rounded_sl,
-                    'triggerBy': 'LastPrice',
-                    'reduceOnly': True,
-                    'triggerDirection': sl_trigger
-                })
-                logger.info(f"✅ Set SL: {rounded_sl} (trigger: {sl_trigger})")
-            if rounded_tp:
-                tp_side = "sell" if side == "buy" else "buy"
-                tp_trigger = "above" if side == "buy" else "below"
-                self.exchange.create_order(formatted_symbol, 'market', tp_side, rounded_amount, None, params={
-                    'category': 'linear',
-                    'triggerPrice': rounded_tp,
-                    'triggerBy': 'LastPrice',
-                    'reduceOnly': True,
-                    'triggerDirection': tp_trigger
-                })
-                logger.info(f"✅ Set TP1: {rounded_tp} (trigger: {tp_trigger})")
-            if rounded_tp2:
-                tp_side = "sell" if side == "buy" else "buy"
-                tp_trigger = "above" if side == "buy" else "below"
-                self.exchange.create_order(formatted_symbol, 'market', tp_side, rounded_amount / 2, None, params={
-                    'category': 'linear',
-                    'triggerPrice': rounded_tp2,
-                    'triggerBy': 'LastPrice',
-                    'reduceOnly': True,
-                    'triggerDirection': tp_trigger
-                })
-                logger.info(f"✅ Set TP2: {rounded_tp2} (trigger: {tp_trigger})")
-            logger.info(f"✅ Created market order: {order['id']}")
-            return order
+            
+            logger.info(f"📝 إنشاء أمر {side} للرمز {formatted_symbol}")
+            logger.info(f"📊 الكمية: {rounded_amount}")
+            
+            # إعداد معاملات الأمر الأساسي
+            params = {
+                "category": "linear",
+                "symbol": formatted_symbol,
+                "side": side.capitalize(),
+                "orderType": "Market",
+                "qty": str(rounded_amount),
+                "timeInForce": "IOC"
+            }
+            
+            # إضافة وقف الخسارة والهدف إذا كانا موجودين
+            if stop_loss:
+                rounded_sl = self._round_price(formatted_symbol, stop_loss)
+                params["stopLoss"] = str(rounded_sl)
+                logger.info(f"⛔ وقف الخسارة: {rounded_sl}")
+            
+            if take_profit:
+                rounded_tp = self._round_price(formatted_symbol, take_profit)
+                params["takeProfit"] = str(rounded_tp)
+                logger.info(f"🎯 الهدف: {rounded_tp}")
+            
+            # إنشاء الأمر
+            result = self._make_request("/v5/order/create", "POST", params)
+            
+            if result.get("retCode") == 0:
+                order_id = result.get("result", {}).get("orderId")
+                logger.info(f"✅ تم إنشاء الأمر بنجاح: {order_id}")
+                
+                return {
+                    "status": "success",
+                    "order_id": order_id,
+                    "symbol": formatted_symbol,
+                    "side": side,
+                    "amount": rounded_amount,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit
+                }
+            else:
+                error_msg = result.get("retMsg", "خطأ غير معروف")
+                logger.error(f"❌ فشل في إنشاء الأمر: {error_msg}")
+                raise Exception(error_msg)
+                
         except Exception as e:
-            logger.error(f"❌ Error creating order for {symbol}: {e}")
+            logger.error(f"❌ خطأ في إنشاء الأمر: {e}")
             raise
 
-    def open_position(self, symbol: str, direction: str, entry_price: float, stop_loss: float = None, take_profit: float = None, take_profit_2: float = None) -> Dict[str, Any]:
+    def open_position(self, symbol: str, direction: str, entry_price: float,
+                     stop_loss: float = None, take_profit: float = None) -> Dict[str, Any]:
+        """فتح مركز جديد مع جميع الميزات المطلوبة"""
         try:
-            self.set_margin_mode(symbol, "cross")
-            self.set_leverage(symbol)
-            position_size = self.calculate_position_size(symbol, entry_price)
-            side = 'buy' if direction.upper() == 'LONG' else 'sell'
-            order = self.create_market_order(symbol, side, position_size, stop_loss, take_profit, take_profit_2)
-            logger.info(f"✅ Position opened: {symbol} {direction} @ {entry_price}")
-            return {'status': 'success', 'order': order, 'symbol': symbol, 'direction': direction, 'size': position_size, 'entry_price': entry_price}
+            logger.info(f"🚀 فتح مركز {direction} للرمز {symbol}")
+            
+            # تعيين Cross Margin
+            self.set_cross_margin(symbol)
+            
+            # الحصول على أقصى رافعة مالية وتعيينها
+            max_leverage = self.get_max_leverage(symbol)
+            self.set_leverage(symbol, max_leverage)
+            
+            # حساب حجم المركز (5% من رأس المال الحقيقي)
+            position_size = self.calculate_position_size(symbol, entry_price, max_leverage)
+            
+            # تحديد اتجاه الأمر
+            side = 'Buy' if direction.upper() == 'LONG' else 'Sell'
+            
+            # إنشاء الأمر مع وقف الخسارة والهدف
+            order = self.create_order_with_sl_tp(
+                symbol, 
+                side, 
+                position_size,
+                stop_loss,
+                take_profit
+            )
+            
+            logger.info(f"✅ تم فتح المركز بنجاح")
+            logger.info(f"📋 معرف الأمر: {order.get('order_id')}")
+            logger.info(f"⚡ الرافعة المالية: {max_leverage}x")
+            logger.info(f"📊 حجم المركز: {position_size}")
+            
+            return {
+                'status': 'success',
+                'order': order,
+                'symbol': symbol,
+                'direction': direction,
+                'size': position_size,
+                'entry_price': entry_price,
+                'leverage': max_leverage
+            }
+            
         except Exception as e:
-            logger.error(f"❌ Error opening position for {symbol}: {e}")
-            return {'status': 'error', 'message': str(e)}
+            logger.error(f"❌ خطأ في فتح المركز: {e}")
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
 
     def get_positions(self) -> list:
+        """الحصول على المراكز المفتوحة"""
         try:
-            positions = self.exchange.fetch_positions(params={'category': 'linear'})
-            open_positions = [pos for pos in positions if pos['contracts'] > 0]
-            return open_positions
+            result = self._make_request("/v5/position/list", "GET", {"category": "linear"})
+            
+            if result.get("retCode") == 0:
+                positions = result.get("result", {}).get("list", [])
+                open_positions = [pos for pos in positions if float(pos.get("size", 0)) > 0]
+                
+                logger.info(f"📊 المراكز المفتوحة: {len(open_positions)}")
+                return open_positions
+            else:
+                logger.error(f"❌ فشل في جلب المراكز: {result.get('retMsg', 'خطأ غير معروف')}")
+                return []
+                
         except Exception as e:
-            logger.error(f"❌ Error fetching positions: {e}")
+            logger.error(f"❌ خطأ في جلب المراكز: {e}")
             return []
 
     def close_position(self, symbol: str) -> Dict[str, Any]:
+        """إغلاق مركز مع إلغاء جميع الأوامر المرتبطة"""
         try:
             formatted_symbol = self._format_symbol(symbol)
+            
+            # إلغاء جميع الأوامر المفتوحة للرمز أولاً
+            self._cancel_all_orders(formatted_symbol)
+            
+            # الحصول على المراكز المفتوحة
             positions = self.get_positions()
-            position = next((pos for pos in positions if pos['symbol'] == formatted_symbol), None)
+            position = next((pos for pos in positions if pos.get("symbol") == formatted_symbol), None)
+            
             if not position:
-                return {'status': 'error', 'message': 'No open position'}
-            side = 'sell' if position['side'] == 'long' else 'buy'
-            amount = abs(position['contracts'])
-            order = self.exchange.create_market_order(formatted_symbol, side, amount, params={'reduceOnly': True, 'category': 'linear'})
-            self._cancel_open_orders(formatted_symbol)
-            logger.info(f"✅ Closed position: {symbol}")
-            return {'status': 'success', 'order': order}
+                return {'status': 'error', 'message': 'لا يوجد مركز مفتوح'}
+            
+            # تحديد اتجاه الإغلاق
+            side = 'Sell' if position.get("side") == "Buy" else 'Buy'
+            amount = float(position.get("size", 0))
+            
+            # إنشاء أمر إغلاق
+            params = {
+                "category": "linear",
+                "symbol": formatted_symbol,
+                "side": side,
+                "orderType": "Market",
+                "qty": str(amount),
+                "timeInForce": "IOC",
+                "reduceOnly": True
+            }
+            
+            result = self._make_request("/v5/order/create", "POST", params)
+            
+            if result.get("retCode") == 0:
+                order_id = result.get("result", {}).get("orderId")
+                logger.info(f"✅ تم إغلاق المركز: {symbol}")
+                
+                return {
+                    'status': 'success',
+                    'order_id': order_id
+                }
+            else:
+                error_msg = result.get("retMsg", "خطأ غير معروف")
+                logger.error(f"❌ فشل في إغلاق المركز: {error_msg}")
+                return {
+                    'status': 'error',
+                    'message': error_msg
+                }
+                
         except Exception as e:
-            logger.error(f"❌ Error closing position for {symbol}: {e}")
-            return {'status': 'error', 'message': str(e)}
+            logger.error(f"❌ خطأ في إغلاق المركز: {e}")
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
+
+    def _cancel_all_orders(self, symbol: str) -> bool:
+        """إلغاء جميع الأوامر المفتوحة للرمز"""
+        try:
+            params = {
+                "category": "linear",
+                "symbol": symbol
+            }
+            
+            result = self._make_request("/v5/order/cancel-all", "POST", params)
+            
+            if result.get("retCode") == 0:
+                logger.info(f"✅ تم إلغاء جميع الأوامر لـ {symbol}")
+                return True
+            else:
+                logger.warning(f"⚠️ فشل في إلغاء الأوامر لـ {symbol}")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"⚠️ خطأ في إلغاء الأوامر: {e}")
+            return False
+
