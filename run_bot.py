@@ -26,10 +26,10 @@ async def main():
 
     api_id = config.get('TELEGRAM', 'API_ID')
     api_hash = config.get('TELEGRAM', 'API_HASH')
-    phone = config.get('TELEGRAM', 'phone_number')  # Changed from PHONE to phone_number
-    session_name = config.get('TELEGRAM', 'SESSION_NAME')
+    phone = config.get('TELEGRAM', 'phone_number')
+    string_session = config.get('TELEGRAM', 'STRING_SESSION')  # Use String Session directly
     
-    client = TelegramClient(session_name, api_id, api_hash)
+    client = TelegramClient(string_session, api_id, api_hash)
     
     bybit_api = BybitAPI()
     
