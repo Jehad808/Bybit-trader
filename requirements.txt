@@ -1,7 +1,7 @@
-ccxt>=4.3.34
-telethon>=1.37.0
-python-decouple>=3.8
+telethon>=1.35
+ccxt>=4.2.86
+python-dotenv>=1.0
 requests>=2.31.0
-pandas>=2.2.2
-numpy>=1.26.4
-pybit>=5.7.2
+pandas>=1.5.0
+numpy>=1.24.0
+
