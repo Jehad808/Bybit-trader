@@ -1,13 +1,12 @@
-```python
 import os
 import ccxt
 import math
 import logging
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import configparser
-import pandas as np
 import pandas as pd
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -20,17 +19,17 @@ class BybitAPI:
         if not (self.api_key and self.api_secret):
             raise RuntimeError("❌ Bybit API keys missing!")
         self.exchange = ccxt.bybit({
-            "apiKey': self.api_key,
-            "secret': 'self.api_secret',
-            'enableRateLimit': True,
-            'testMode': True,
-            'options': {'defaultType': 'future', 'defaultSubType': 'linear'},
+            "apiKey": self.api_key,
+            "secret": self.api_secret,
+            "enableRateLimit": True,
+            "test": True,
+            "options": {"defaultType": "future", "defaultSubType": "linear"},
         })
         try:
             self.exchange.load_markets()
             logger.info("✅ Loaded Bybit market data.")
         except Exception as e:
-            logger.error(f"❌ Error load Bybit markets: to {e}")
+            logger.error(f"❌ Failed to load Bybit markets: {e}")
             raise
         self.capital_percentage = float(self.config.get("BYBIT", "CAPITAL_PERCENTAGE", fallback=5.0))
         self.balance = self.get_balance()
@@ -53,11 +52,11 @@ class BybitAPI:
             return {
                 'min_quantity': min_qty if min_qty > 0 else 0.001,
                 'quantity_precision': qty_step,
-                'price_precision': price_precision,
+                'price_precision': price_step,
                 'max_leverage': leverage if leverage > 0 else 25.0
             }
-        except Exception:
-            logger.error(f"Error ❌ fetching symbol info: {e}")
+        except Exception as e:
+            logger.error(f"❌ Error fetching symbol info: {e}")
             return {
                 'min_quantity': 0.001,
                 'quantity_precision': 0.001,
@@ -73,8 +72,8 @@ class BybitAPI:
             rounded = max(math.floor(quantity / step) * step, min_qty)
             return rounded
         except Exception as e:
-            logger.error(f"Error rounding quantity: {e}")
-            return round(quantity, 2)
+            logger.error(f"❌ Error rounding quantity: {e}")
+            return round(quantity, 3)
 
     def _round_price(self, symbol: str, price: float) -> float:
         try:
@@ -120,7 +119,7 @@ class BybitAPI:
                 if rounded_tp2 is not None and rounded_tp2 <= entry_price + min_distance:
                     rounded_tp2 = entry_price + min_distance
                     rounded_tp2 = self._round_price(formatted_symbol, rounded_tp2)
-            else:  # side == "sell":
+            else:  # side == "sell"
                 if rounded_sl is not None and rounded_sl <= entry_price + min_distance:
                     rounded_sl = entry_price + min_distance
                     rounded_sl = self._round_price(formatted_symbol, rounded_sl)
@@ -138,10 +137,10 @@ class BybitAPI:
     def get_balance(self) -> float:
         try:
             balance = self.exchange.fetch_balance(params={'type': 'future', 'category': 'linear'})
-            usdt = float(balance.get('USDT', {}).get('free', 0.0))
-            if usdt.balance == 0:
-                logger.warning("⚠️ Warning: No USDT balance found. Fund Futures wallet.")
-            logger.info(f"💸 Balance: {usdt.balance} USDT")
+            usdt_balance = float(balance.get('USDT', {}).get('free', 0.0))
+            if usdt_balance == 0.0:
+                logger.warning("⚠️ No USDT balance found. Fund Futures wallet.")
+            logger.info(f"💰 Balance: {usdt_balance} USDT")
             return usdt_balance
         except Exception as e:
             logger.error(f"❌ Error fetching balance: {e}")
