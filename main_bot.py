@@ -20,21 +20,20 @@ class TradingBot:
 
     def parse_signal(self, message: str) -> dict:
         try:
-            pattern = r"📊\s*Symbol:\s*(\w+\.P?)\s*🔁\s*Direction:\s*(\w+)\s*📍\s*Entry Price:\s*([\d.]+)\s*🎯\s*Take Profit 1:\s*([\d.]+)\s*(?:🎯\s*Take Profit 2:\s*([\d.]+))?\s*⛔\s*Stop Loss:\s*([\d.]+)"
+            pattern = r"📊\s*Symbol:\s*(\w+\.P?)\s*🔁\s*Direction:\s*(\w+)\s*📍\s*Entry Price:\s*([\d.]+)\s*🎯\s*Take Profit 1:\s*([\d.]+)\s*🎯\s*Take Profit 2:\s*([\d.]+)\s*⛔\s*Stop Loss:\s*([\d.]+)"
             match = re.search(pattern, message, re.IGNORECASE | re.MULTILINE)
             if match:
                 symbol = match.group(1).upper().replace('.P', '')
                 if not symbol.endswith('USDT'):
                     symbol += 'USDT'
-                signal = {
+                return {
                     'symbol': symbol,
                     'direction': match.group(2).upper(),
                     'entry_price': float(match.group(3)),
                     'take_profit': float(match.group(4)),
-                    'take_profit_2': float(match.group(5)) if match.group(5) else None,
+                    'take_profit_2': float(match.group(5)),
                     'stop_loss': float(match.group(6))
                 }
-                return signal
             logger.warning(f"⚠️ تنسيق الإشارة غير صحيح: {message[:100]}")
             return None
         except Exception as e:
