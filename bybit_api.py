@@ -70,8 +70,13 @@ class BybitAPI:
             symbol_info = self._get_symbol_info(symbol)
             min_qty = symbol_info['min_quantity']
             step = symbol_info['quantity_precision']
-            rounded = max(math.floor(quantity / step) * step, min_qty)
-            logger.debug(f"Rounding quantity for {symbol}: input={quantity}, min_qty={min_qty}, step={step}, rounded={rounded}")
+            if quantity < min_qty:
+                logger.warning(f"⚠️ Quantity {quantity} below min_qty {min_qty} for {symbol}, adjusting to min_qty")
+                quantity = min_qty
+            precision = max(0, -int(math.log10(step)))
+            rounded = round(max(quantity, min_qty) / step) * step
+            rounded = round(rounded, precision)
+            logger.debug(f"Rounding quantity for {symbol}: input={quantity}, min_qty={min_qty}, step={step}, precision={precision}, rounded={rounded}")
             return rounded
         except Exception as e:
             logger.error(f"❌ Error rounding quantity for {symbol}: {e}")
@@ -186,12 +191,21 @@ class BybitAPI:
         try:
             formatted_symbol = self._format_symbol(symbol)
             leverage = self.get_max_leverage(formatted_symbol)
-            self.exchange.set_leverage(leverage, formatted_symbol, params={'category': 'linear'})
-            logger.info(f"✅ Set leverage to {leverage}x for {formatted_symbol}")
-            return True
+            # Try max leverage, then fall back to lower values if it fails
+            for attempt_leverage in [leverage, 25.0, 10.0]:
+                try:
+                    self.exchange.set_leverage(attempt_leverage, formatted_symbol, params={'category': 'linear'})
+                    logger.info(f"✅ Set leverage to {attempt_leverage}x for {formatted_symbol}")
+                    return True
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to set leverage {attempt_leverage}x for {formatted_symbol}: {e}")
+                    if attempt_leverage == 10.0:
+                        logger.error(f"❌ All leverage attempts failed for {formatted_symbol}")
+                        return False
+            return False
         except Exception as e:
-            logger.warning(f"⚠️ Failed to set leverage for {formatted_symbol}: {e}")
-            return True
+            logger.error(f"❌ Error setting leverage for {formatted_symbol}: {e}")
+            return False
 
     def set_margin_mode(self, symbol: str, mode: str = "cross") -> bool:
         try:
@@ -284,7 +298,9 @@ class BybitAPI:
     def open_position(self, symbol: str, direction: str, entry_price: float, stop_loss: float = None, take_profit: float = None, take_profit_2: float = None) -> Dict[str, Any]:
         try:
             self.set_margin_mode(symbol, "cross")
-            self.set_leverage(symbol)
+            if not self.set_leverage(symbol):
+                logger.error(f"❌ Failed to set leverage for {symbol}, aborting position")
+                return {'status': 'error', 'message': 'Failed to set leverage'}
             position_size = self.calculate_position_size(symbol, entry_price)
             side = 'buy' if direction.upper() == 'LONG' else 'sell'
             order = self.create_market_order(symbol, side, position_size, stop_loss, take_profit, take_profit_2)
