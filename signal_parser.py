@@ -5,16 +5,14 @@ from typing import Optional, Dict, Any
 logger = logging.getLogger(__name__)
 
 class TradingSignalParser:
-    """محلل إشارات التداول المحسن من Telegram"""
-    
     def __init__(self):
-        # نماذج regex لاستخراج البيانات
         self.patterns = {
             'symbol': [
                 r'Symbol[:\s]*([A-Z0-9]+\.?P?)',
                 r'📊\s*Symbol[:\s]*([A-Z0-9]+\.?P?)',
                 r'الرمز[:\s]*([A-Z0-9]+\.?P?)',
-                r'العملة[:\s]*([A-Z0-9]+\.?P?)'
+                r'العملة[:\s]*([A-Z0-9]+\.?P?)',
+                r'([A-Z0-9]+USDT)\b'
             ],
             'direction': [
                 r'Direction[:\s]*(LONG|SHORT|BUY|SELL)',
@@ -49,10 +47,8 @@ class TradingSignalParser:
         }
 
     def extract_field(self, text: str, field: str) -> Optional[str]:
-        """استخراج حقل معين من النص"""
         if field not in self.patterns:
             return None
-        
         for pattern in self.patterns[field]:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
@@ -60,72 +56,48 @@ class TradingSignalParser:
         return None
 
     def normalize_direction(self, direction: str) -> Optional[str]:
-        """تطبيع اتجاه التداول"""
         if not direction:
             return None
-        
         direction = direction.upper().strip()
-        
         if direction in ['LONG', 'BUY', 'شراء']:
             return 'LONG'
         elif direction in ['SHORT', 'SELL', 'بيع']:
             return 'SHORT'
-        else:
-            return None
+        return None
 
     def normalize_symbol(self, symbol: str) -> Optional[str]:
-        """تطبيع رمز العملة"""
         if not symbol:
             return None
-        
         symbol = symbol.upper().strip()
-        
-        # إزالة المسافات والرموز غير المرغوبة
         symbol = re.sub(r'[^A-Z0-9.]', '', symbol)
-        
-        # إزالة .P إذا كان موجود
         symbol = symbol.replace('.P', '')
-        
-        # التأكد من وجود USDT
         if not symbol.endswith('USDT'):
             if 'USDT' not in symbol:
                 symbol = symbol + 'USDT'
-        
         return symbol
 
     def parse_signal(self, message_text: str) -> Optional[Dict[str, Any]]:
-        """تحليل إشارة التداول من نص الرسالة"""
         try:
             if not message_text:
                 return None
-            
-            # التحقق من وجود كلمات مفتاحية للإشارة
             signal_keywords = [
                 'Trade Signal', 'Symbol', 'Direction', 'Entry Price',
                 'Take Profit', 'Stop Loss', 'إشارة', 'الرمز',
                 'وقف الخسارة', 'الهدف', 'سعر الدخول'
             ]
-            
             if not any(keyword.lower() in message_text.lower() for keyword in signal_keywords):
                 return None
-            
-            # استخراج البيانات
             symbol = self.extract_field(message_text, 'symbol')
             direction = self.extract_field(message_text, 'direction')
             entry_price = self.extract_field(message_text, 'entry_price')
             take_profit_1 = self.extract_field(message_text, 'take_profit_1')
             take_profit_2 = self.extract_field(message_text, 'take_profit_2')
             stop_loss = self.extract_field(message_text, 'stop_loss')
-            
-            # تطبيع البيانات
             symbol = self.normalize_symbol(symbol)
             direction = self.normalize_direction(direction)
-            
-            # التحقق من البيانات الأساسية
             if not all([symbol, direction, entry_price]):
                 logger.warning("❌ بيانات الإشارة غير مكتملة")
                 return None
-            
             try:
                 entry_price = float(entry_price)
                 take_profit_1 = float(take_profit_1) if take_profit_1 else None
@@ -134,8 +106,6 @@ class TradingSignalParser:
             except ValueError:
                 logger.error("❌ خطأ في تحويل الأسعار إلى أرقام")
                 return None
-            
-            # إنشاء كائن الإشارة
             signal = {
                 'symbol': symbol,
                 'direction': direction,
@@ -145,54 +115,44 @@ class TradingSignalParser:
                 'stop_loss': stop_loss,
                 'raw_text': message_text
             }
-            
             logger.info(f"✅ تم تحليل إشارة بنجاح: {symbol} {direction} @ {entry_price}")
             return signal
-            
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل الإشارة: {e}")
             return None
 
     def validate_signal(self, signal: Dict[str, Any]) -> bool:
-        """التحقق من صحة الإشارة"""
         try:
-            # التحقق من البيانات الأساسية
-            required_fields = ['symbol', 'direction', 'entry_price']
+            required_fields = ['symbol', 'direction', 'entry_price', 'stop_loss', 'take_profit_1']
             for field in required_fields:
                 if not signal.get(field):
                     logger.error(f"❌ حقل مطلوب مفقود: {field}")
                     return False
-            
-            # التحقق من صحة الاتجاه
             if signal['direction'] not in ['LONG', 'SHORT']:
                 logger.error(f"❌ اتجاه غير صحيح: {signal['direction']}")
                 return False
-            
-            # التحقق من صحة الأسعار
             if signal['entry_price'] <= 0:
                 logger.error("❌ سعر الدخول يجب أن يكون أكبر من صفر")
                 return False
-            
-            # التحقق من منطقية الأسعار
             entry = signal['entry_price']
             tp1 = signal.get('take_profit_1')
             sl = signal.get('stop_loss')
-            
             if signal['direction'] == 'LONG':
-                if tp1 and tp1 <= entry:
+                if tp1 <= entry:
                     logger.warning("⚠️ الهدف الأول أقل من سعر الدخول في صفقة LONG")
-                if sl and sl >= entry:
+                    return False
+                if sl >= entry:
                     logger.warning("⚠️ وقف الخسارة أعلى من سعر الدخول في صفقة LONG")
+                    return False
             else:  # SHORT
-                if tp1 and tp1 >= entry:
+                if tp1 >= entry:
                     logger.warning("⚠️ الهدف الأول أعلى من سعر الدخول في صفقة SHORT")
-                if sl and sl <= entry:
+                    return False
+                if sl <= entry:
                     logger.warning("⚠️ وقف الخسارة أقل من سعر الدخول في صفقة SHORT")
-            
+                    return False
             logger.info("✅ الإشارة صحيحة ومقبولة")
             return True
-            
         except Exception as e:
             logger.error(f"❌ خطأ في التحقق من الإشارة: {e}")
             return False
-
