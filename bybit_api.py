@@ -115,7 +115,7 @@ class BybitAPI:
             logger.warning(f"⚠️ Error calculating ATR for {symbol}: {e}")
             return 0.01
 
-    def _validate_sl_tp Mediavalidate(self, symbol: str, side: str, entry_price: float, stop_loss: float, take_profit: float, take_profit_2: float = None) -> tuple:
+    def _validate_sl_tp(self, symbol: str, side: str, entry_price: float, stop_loss: float, take_profit: float, take_profit_2: float = None) -> tuple:
         try:
             formatted_symbol = self._format_symbol(symbol)
             rounded_sl = self._round_price(formatted_symbol, stop_loss) if stop_loss else None
