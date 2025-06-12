@@ -27,9 +27,11 @@ async def main():
     api_id = config.get('TELEGRAM', 'API_ID')
     api_hash = config.get('TELEGRAM', 'API_HASH')
     phone = config.get('TELEGRAM', 'phone_number')
-    string_session = config.get('TELEGRAM', 'STRING_SESSION')  # Use String Session directly
+    string_session = config.get('TELEGRAM', 'STRING_SESSION')
     
-    client = TelegramClient(string_session, api_id, api_hash)
+    # Use StringSession directly instead of SQLiteSession
+    from telethon.sessions import StringSession
+    client = TelegramClient(StringSession(string_session), api_id, api_hash)
     
     bybit_api = BybitAPI()
     
