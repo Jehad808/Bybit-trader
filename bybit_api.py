@@ -1,12 +1,13 @@
+```python
 import os
 import ccxt
 import math
 import logging
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import configparser
+import pandas as np
 import pandas as pd
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +20,17 @@ class BybitAPI:
         if not (self.api_key and self.api_secret):
             raise RuntimeError("❌ Bybit API keys missing!")
         self.exchange = ccxt.bybit({
-            "apiKey": self.api_key,
-            "secret": self.api_secret,
-            "enableRateLimit": True,
-            "test": True,
-            "options": {"defaultType": "future", "defaultSubType": "linear"},
+            "apiKey': self.api_key,
+            "secret': 'self.api_secret',
+            'enableRateLimit': True,
+            'testMode': True,
+            'options': {'defaultType': 'future', 'defaultSubType': 'linear'},
         })
         try:
             self.exchange.load_markets()
             logger.info("✅ Loaded Bybit market data.")
         except Exception as e:
-            logger.error(f"❌ Failed to load Bybit markets: {e}")
+            logger.error(f"❌ Error load Bybit markets: to {e}")
             raise
         self.capital_percentage = float(self.config.get("BYBIT", "CAPITAL_PERCENTAGE", fallback=5.0))
         self.balance = self.get_balance()
@@ -46,17 +47,20 @@ class BybitAPI:
             formatted_symbol = self._format_symbol(symbol)
             market = self.exchange.market(formatted_symbol)
             leverage = float(market['info'].get('leverageFilter', {}).get('maxLeverage', 25.0))
+            min_qty = float(market['limits']['amount']['min'] or 0.001)
+            qty_step = float(market['precision']['amount'] or 0.001)
+            price_step = float(market['precision']['price'] or 0.0001)
             return {
-                'min_quantity': float(market['limits']['amount']['min'] or 0.001),
-                'quantity_step': float(market['precision']['amount'] or 0.001),
-                'price_precision': float(market['precision']['price'] or 0.0001),
-                'max_leverage': leverage
+                'min_quantity': min_qty if min_qty > 0 else 0.001,
+                'quantity_precision': qty_step,
+                'price_precision': price_precision,
+                'max_leverage': leverage if leverage > 0 else 25.0
             }
-        except Exception as e:
-            logger.error(f"❌ Error fetching symbol info: {e}")
+        except Exception:
+            logger.error(f"Error ❌ fetching symbol info: {e}")
             return {
                 'min_quantity': 0.001,
-                'quantity_step': 0.001,
+                'quantity_precision': 0.001,
                 'price_precision': 0.0001,
                 'max_leverage': 25.0
             }
@@ -64,13 +68,13 @@ class BybitAPI:
     def _round_quantity(self, symbol: str, quantity: float) -> float:
         try:
             symbol_info = self._get_symbol_info(symbol)
-            min_quantity = symbol_info['min_quantity']
-            step = symbol_info['quantity_step']
-            rounded = max(math.floor(quantity / step) * step, min_quantity)
+            min_qty = symbol_info['min_quantity']
+            step = symbol_info['quantity_precision']
+            rounded = max(math.floor(quantity / step) * step, min_qty)
             return rounded
         except Exception as e:
-            logger.error(f"❌ Error rounding quantity: {e}")
-            return round(quantity, 3)
+            logger.error(f"Error rounding quantity: {e}")
+            return round(quantity, 2)
 
     def _round_price(self, symbol: str, price: float) -> float:
         try:
@@ -107,23 +111,23 @@ class BybitAPI:
             atr = self._calculate_atr(formatted_symbol)
             min_distance = atr * 0.5
             if side == "buy":
-                if rounded_sl and rounded_sl >= entry_price - min_distance:
+                if rounded_sl is not None and rounded_sl >= entry_price - min_distance:
                     rounded_sl = entry_price - min_distance
                     rounded_sl = self._round_price(formatted_symbol, rounded_sl)
-                if rounded_tp and rounded_tp <= entry_price + min_distance:
+                if rounded_tp is not None and rounded_tp <= entry_price + min_distance:
                     rounded_tp = entry_price + min_distance
                     rounded_tp = self._round_price(formatted_symbol, rounded_tp)
-                if rounded_tp2 and rounded_tp2 <= entry_price + min_distance:
+                if rounded_tp2 is not None and rounded_tp2 <= entry_price + min_distance:
                     rounded_tp2 = entry_price + min_distance
                     rounded_tp2 = self._round_price(formatted_symbol, rounded_tp2)
-            elif side == "sell":
-                if rounded_sl and rounded_sl <= entry_price + min_distance:
+            else:  # side == "sell":
+                if rounded_sl is not None and rounded_sl <= entry_price + min_distance:
                     rounded_sl = entry_price + min_distance
                     rounded_sl = self._round_price(formatted_symbol, rounded_sl)
-                if rounded_tp and rounded_tp >= entry_price - min_distance:
+                if rounded_tp is not None and rounded_tp >= entry_price - min_distance:
                     rounded_tp = entry_price - min_distance
                     rounded_tp = self._round_price(formatted_symbol, rounded_tp)
-                if rounded_tp2 and rounded_tp2 >= entry_price - min_distance:
+                if rounded_tp2 is not None and rounded_tp2 >= entry_price - min_distance:
                     rounded_tp2 = entry_price - min_distance
                     rounded_tp2 = self._round_price(formatted_symbol, rounded_tp2)
             return rounded_sl, rounded_tp, rounded_tp2
@@ -134,10 +138,10 @@ class BybitAPI:
     def get_balance(self) -> float:
         try:
             balance = self.exchange.fetch_balance(params={'type': 'future', 'category': 'linear'})
-            usdt_balance = balance.get('USDT', {}).get('free', 0.0)
-            if usdt_balance == 0.0:
-                logger.warning("⚠️ No USDT balance found. Fund Futures wallet.")
-            logger.info(f"💰 Balance: {usdt_balance} USDT")
+            usdt = float(balance.get('USDT', {}).get('free', 0.0))
+            if usdt.balance == 0:
+                logger.warning("⚠️ Warning: No USDT balance found. Fund Futures wallet.")
+            logger.info(f"💸 Balance: {usdt.balance} USDT")
             return usdt_balance
         except Exception as e:
             logger.error(f"❌ Error fetching balance: {e}")
@@ -148,13 +152,14 @@ class BybitAPI:
             balance = self.get_balance()
             if balance <= 0:
                 raise RuntimeError("Insufficient balance.")
-            position_value = balance * (self.capital_percentage / 100)
-            quantity = position_value / entry_price
+            leverage = self.get_max_leverage(symbol)
+            position_value = balance * (self.capital_percentage / 100)  # 5% من الرصيد الحقيقي
+            quantity = (position_value * leverage) / entry_price  # تطبيق الرافعة على الكمية
             formatted_symbol = self._format_symbol(symbol)
             rounded_qty = self._round_quantity(formatted_symbol, quantity)
-            required_value = rounded_qty * entry_price
+            required_value = (rounded_qty * entry_price) / leverage
             if required_value > balance:
-                max_qty = math.floor((balance / entry_price) / self._get_symbol_info(symbol)['quantity_step']) * self._get_symbol_info(symbol)['quantity_step']
+                max_qty = math.floor((balance * leverage / entry_price) / self._get_symbol_info(symbol)['quantity_precision']) * self._get_symbol_info(symbol)['quantity_precision']
                 if max_qty >= self._get_symbol_info(symbol)['min_quantity']:
                     rounded_qty = max_qty
                 else:
@@ -176,7 +181,7 @@ class BybitAPI:
         try:
             formatted_symbol = self._format_symbol(symbol)
             leverage = self.get_max_leverage(formatted_symbol)
-            self.exchange.set_leverage(leverage, formatted_symbol, params={'category': 'linear'})
+            self.exchange.set_leverage(leverage, formatted_symbol, params={'category': 'linear', 'buyLeverage': leverage, 'sellLeverage': leverage})
             logger.info(f"✅ Set leverage to {leverage}x for {formatted_symbol}")
             return True
         except Exception as e:
@@ -204,6 +209,18 @@ class BybitAPI:
             return False
         except Exception as e:
             logger.error(f"❌ Error checking position: {e}")
+            return False
+
+    def _cancel_open_orders(self, symbol: str) -> bool:
+        try:
+            formatted_symbol = self._format_symbol(symbol)
+            open_orders = self.exchange.fetch_open_orders(formatted_symbol, params={'category': 'linear'})
+            for order in open_orders:
+                self.exchange.cancel_order(order['id'], formatted_symbol, params={'category': 'linear'})
+                logger.info(f"✅ Canceled order: {order['id']} for {formatted_symbol}")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to cancel orders: {e}")
             return False
 
     def create_market_order(self, symbol: str, side: str, amount: float, stop_loss: float = None, take_profit: float = None, take_profit_2: float = None) -> Dict[str, Any]:
@@ -270,7 +287,7 @@ class BybitAPI:
             return {'status': 'success', 'order': order, 'symbol': symbol, 'direction': direction, 'size': position_size, 'entry_price': entry_price}
         except Exception as e:
             logger.error(f"❌ Error opening position: {e}")
-            raise
+            return {'status': 'error', 'message': str(e)}
 
     def get_positions(self) -> list:
         try:
@@ -291,8 +308,9 @@ class BybitAPI:
             side = 'sell' if position['side'] == 'long' else 'buy'
             amount = abs(position['contracts'])
             order = self.exchange.create_market_order(formatted_symbol, side, amount, params={'reduceOnly': True, 'category': 'linear'})
+            self._cancel_open_orders(formatted_symbol)
             logger.info(f"✅ Closed position: {symbol}")
             return {'status': 'success', 'order': order}
         except Exception as e:
             logger.error(f"❌ Error closing position: {e}")
-            return {'error': str(e)}
+            return {'status': 'error', 'message': str(e)}
